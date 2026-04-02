@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "Dev Agent",
+    "slug": "dev-agent",
+    "scheme": "devagent",
+    "version": "1.0.0",
+    "icon": "./assets/app-icon.png",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/app-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#F4F2ED"
+    },
+    "ios": {
+      "bundleIdentifier": "com.team7.devagent"
+    },
+    "android": {
+      "package": "com.team7.devagent"
+    },
+    "extra": {
+      "apiUrl": "https://dev-agent-api.kikulearn.app",
+      "wsUrl": "wss://dev-agent-api.kikulearn.app/ws"
+    },
+    "plugins": [
+      "expo-video"
+    ]
+  }
+}

@@ -1,0 +1,39 @@
+appId: com.team7.devagent
+---
+- launchApp
+- extendedWaitUntil:
+    visible:
+      id: new-chat-button
+    timeout: 10000
+- tapOn:
+    id: new-chat-button
+- extendedWaitUntil:
+    visible:
+      id: start-new-chat-button
+    timeout: 10000
+- tapOn:
+    id: start-new-chat-button
+- tapOn:
+    id: composer-input
+- inputText: "Run sleep 2 and then reply ready"
+- tapOn:
+    id: send-button
+- extendedWaitUntil:
+    visible:
+      id: open-steer-button
+    timeout: 10000
+- tapOn:
+    id: open-steer-button
+- extendedWaitUntil:
+    visible:
+      id: steer-input
+    timeout: 10000
+- tapOn:
+    id: steer-input
+- inputText: "Reply exactly queued steer works"
+- tapOn:
+    id: queue-steer-button
+- extendedWaitUntil:
+    visible:
+      id: message-assistant-2
+    timeout: 90000

@@ -1,0 +1,29 @@
+{
+  "name": "@dev-agent/mobile",
+  "private": true,
+  "main": "./index.js",
+  "scripts": {
+    "start": "expo start",
+    "ios": "expo run:ios",
+    "android": "expo run:android",
+    "web": "expo start --web",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "@supabase/supabase-js": "^2.57.2",
+    "expo": "~55.0.9",
+    "expo-clipboard": "^55.0.9",
+    "expo-constants": "~55.0.9",
+    "expo-image-picker": "^55.0.14",
+    "expo-status-bar": "~55.0.4",
+    "expo-video": "~55.0.11",
+    "react": "19.2.0",
+    "react-native": "0.83.4"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "typescript": "~5.9.3"
+  }
+}

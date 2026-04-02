@@ -1,0 +1,28 @@
+{
+  "name": "dev-agent",
+  "private": true,
+  "workspaces": [
+    "apps/server",
+    "apps/mobile"
+  ],
+  "scripts": {
+    "dev:server": "npm run dev --workspace @dev-agent/server",
+    "dev:mobile": "npm run start --workspace @dev-agent/mobile",
+    "ios": "npm --workspace @dev-agent/mobile run ios --",
+    "android": "npm --workspace @dev-agent/mobile run android --",
+    "web": "npm --workspace @dev-agent/mobile run web --",
+    "smoke:ios": "maestro test .maestro/ios/chat-smoke.yaml",
+    "smoke:ios:chat": "maestro test .maestro/ios/chat-smoke.yaml",
+    "smoke:ios:theme": "maestro test .maestro/ios/theme-persistence-smoke.yaml",
+    "smoke:ios:steer": "maestro test .maestro/ios/steer-smoke.yaml",
+    "publish:proof-video": "node scripts/publish-proof-video.mjs",
+    "typecheck": "npm run typecheck --workspace @dev-agent/server && npm run typecheck --workspace @dev-agent/mobile",
+    "lint": "npm run lint --workspace @dev-agent/server && npm run lint --workspace @dev-agent/mobile"
+  },
+  "version": "1.0.0",
+  "dependencies": {
+    "expo": "~55.0.9",
+    "react": "19.2.0",
+    "react-native": "0.83.4"
+  }
+}

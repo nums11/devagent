@@ -1,0 +1,27 @@
+appId: com.team7.devagent
+---
+- launchApp
+- extendedWaitUntil:
+    visible:
+      id: new-chat-button
+    timeout: 10000
+- tapOn:
+    id: new-chat-button
+- extendedWaitUntil:
+    visible:
+      id: landing-screen
+    timeout: 10000
+- assertVisible:
+    id: landing-primary-button
+- tapOn:
+    id: landing-primary-button
+- extendedWaitUntil:
+    visible:
+      id: landing-draft-preview
+    timeout: 10000
+- assertVisible:
+    text: "Build a playful landing screen and run the harness."
+- tapOn:
+    id: landing-harness-prompt-button
+- assertVisible:
+    text: "Run the harness and report the smoke command."

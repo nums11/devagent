@@ -1,0 +1,31 @@
+appId: com.team7.devagent
+---
+- launchApp
+- extendedWaitUntil:
+    visible:
+      id: open-settings-button
+    timeout: 10000
+- tapOn:
+    id: open-settings-button
+- extendedWaitUntil:
+    visible:
+      id: theme-light-button
+    timeout: 10000
+- tapOn:
+    id: theme-light-button
+- assertVisible:
+    text: "Theme: light"
+- stopApp
+- launchApp
+- extendedWaitUntil:
+    visible:
+      id: open-settings-button
+    timeout: 10000
+- tapOn:
+    id: open-settings-button
+- assertVisible:
+    text: "Theme: light"
+- tapOn:
+    id: theme-dark-button
+- assertVisible:
+    text: "Theme: dark"
