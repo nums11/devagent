@@ -13,7 +13,10 @@
       "backgroundColor": "#F4F2ED"
     },
     "ios": {
-      "bundleIdentifier": "com.team7.devagent"
+      "bundleIdentifier": "com.team7.devagent",
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "Dev Agent needs photo library access so you can attach images to a chat."
+      }
     },
     "android": {
       "package": "com.team7.devagent"
@@ -23,7 +26,13 @@
       "wsUrl": "wss://dev-agent-api.kikulearn.app/ws"
     },
     "plugins": [
-      "expo-video"
+      "expo-video",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Dev Agent needs photo library access so you can attach images to a chat."
+        }
+      ]
     ]
   }
 }

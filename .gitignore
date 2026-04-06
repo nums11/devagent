@@ -4,6 +4,7 @@ node_modules
 dist
 build
 coverage
+artifacts/
 .env
 .env.local
 *.log
@@ -11,4 +12,3 @@ apps/server/data
 apps/mobile/.expo
 apps/mobile/dist
 supabase/.temp
-

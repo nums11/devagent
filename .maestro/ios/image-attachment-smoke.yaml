@@ -1,0 +1,31 @@
+appId: com.team7.devagent
+---
+- addMedia:
+    - ../../apps/mobile/assets/app-icon.png
+- launchApp:
+    permissions:
+      photos: allow
+- extendedWaitUntil:
+    visible:
+      id: open-settings-button
+    timeout: 10000
+- tapOn:
+    id: new-chat-button
+- extendedWaitUntil:
+    visible:
+      id: start-new-chat-button
+    timeout: 10000
+- tapOn:
+    id: start-new-chat-button
+- extendedWaitUntil:
+    visible:
+      id: add-image-button
+    timeout: 10000
+- tapOn:
+    id: add-image-button
+- extendedWaitUntil:
+    visible:
+      id: composer-input
+    timeout: 10000
+- tapOn:
+    id: composer-input

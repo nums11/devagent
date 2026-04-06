@@ -8,6 +8,7 @@ For `dev-agent`, that phrase means:
 - add or update the relevant Maestro flow under `.maestro/ios/`
 - run the iOS verification loop until it passes
 - report the exact smoke command, Maestro debug path, and any retries or fixes that were needed
+- if the user explicitly asks to archive or ship to TestFlight, use the Xcode CLI release script in this repo
 
 ## Default Verification Workflow
 
@@ -42,6 +43,7 @@ For `dev-agent`, that phrase means:
 
 - Maestro debug output is under `.maestro/tests/<timestamp>/`
 - If a task needs proof media, prefer saving it under `artifacts/ios/<timestamp>-<feature>/`
+- TestFlight release artifacts are written under `artifacts/testflight/<timestamp>/`
 - Proof videos published into chat are stored in the Supabase Storage bucket `proof-videos`
 - When reporting completion, include:
   - changed behavior
@@ -49,6 +51,14 @@ For `dev-agent`, that phrase means:
   - smoke command(s) run
   - latest passing Maestro flow path
   - relevant artifact/debug paths
+
+## Xcode Release Script
+
+- Use `npm run ios:archive:release` to create a Release archive with `xcodebuild`.
+- Use `npm run ios:testflight` to archive and upload a build to TestFlight with `xcodebuild`.
+- The release script writes artifacts under `artifacts/testflight/<timestamp>/`.
+- The release script uses the local Xcode signing/account context on the machine and does not use EAS.
+- Only run the TestFlight upload path when the user explicitly asks for it.
 
 ## Current Smoke Flows
 

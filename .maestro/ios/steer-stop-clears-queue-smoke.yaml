@@ -15,7 +15,7 @@ appId: com.team7.devagent
     id: start-new-chat-button
 - tapOn:
     id: composer-input
-- inputText: "Run sleep 2 and then reply ready"
+- inputText: "Run sleep 10 and then reply ready"
 - tapOn:
     id: send-button
 - extendedWaitUntil:
@@ -24,18 +24,20 @@ appId: com.team7.devagent
     timeout: 10000
 - tapOn:
     id: composer-input
-- inputText: "Reply exactly queued steer works"
+- inputText: "This should never send"
 - tapOn:
     id: send-button
 - extendedWaitUntil:
     visible:
       id: queued-next-turn-card
     timeout: 10000
+- tapOn:
+    id: stop-button
 - extendedWaitUntil:
-    visible:
+    notVisible:
+      id: queued-next-turn-card
+    timeout: 10000
+- extendedWaitUntil:
+    notVisible:
       id: message-user-2
-    timeout: 90000
-- extendedWaitUntil:
-    visible:
-      id: message-assistant-2
-    timeout: 90000
+    timeout: 10000

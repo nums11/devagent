@@ -1,0 +1,66 @@
+appId: com.team7.devagent
+---
+- launchApp
+- extendedWaitUntil:
+    visible:
+      id: new-chat-button
+    timeout: 10000
+- tapOn:
+    id: new-chat-button
+- extendedWaitUntil:
+    visible:
+      id: start-new-chat-button
+    timeout: 10000
+- tapOn:
+    id: start-new-chat-button
+- tapOn:
+    id: composer-input
+- extendedWaitUntil:
+    visible:
+      id: composer-dock-raised
+    timeout: 10000
+- inputText: "Reply exactly hello from phone"
+- tapOn:
+    id: send-button
+- extendedWaitUntil:
+    visible:
+      id: message-assistant-1
+    timeout: 30000
+- tapOn:
+    id: composer-input
+- extendedWaitUntil:
+    visible:
+      id: composer-dock-raised
+    timeout: 10000
+- tapOn:
+    id: message-assistant-1
+- extendedWaitUntil:
+    visible:
+      id: composer-dock-resting
+    timeout: 10000
+- tapOn:
+    id: composer-input
+- extendedWaitUntil:
+    visible:
+      id: composer-dock-raised
+    timeout: 10000
+- swipe:
+    direction: DOWN
+    from:
+      id: composer-swipe-surface
+- extendedWaitUntil:
+    visible:
+      id: composer-dock-resting
+    timeout: 10000
+- tapOn:
+    id: sidebar-toggle-button
+- extendedWaitUntil:
+    visible:
+      id: sidebar-panel-open
+    timeout: 10000
+- tapOn:
+    id: close-sidebar-button
+- extendedWaitUntil:
+    notVisible:
+      id: sidebar-panel-open
+    timeout: 10000
