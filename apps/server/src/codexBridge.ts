@@ -69,6 +69,43 @@ function deriveUserMessageContent(prompt: string): string {
   return prompt.trim();
 }
 
+function buildWorkspaceContextBlock(conversation: {
+  workspaceName: string | null;
+  workspaceSlug: string | null;
+  workspacePath: string | null;
+  repoProfileName: string | null;
+  repoProfileSlug: string | null;
+  workspaceBranchName: string | null;
+  workspaceSimulatorName: string | null;
+  workspaceSimulatorUdid: string | null;
+  workspaceMetroPort: number | null;
+  workspaceEnvLabel: string | null;
+  workspaceSyncStatus: string | null;
+}): string | null {
+  if (!conversation.workspacePath) {
+    return null;
+  }
+
+  const lines = [
+    'Workspace execution context:',
+    `- workspace: ${conversation.workspaceName || conversation.workspaceSlug || 'workspace'}`,
+    `- local path: ${conversation.workspacePath}`,
+    conversation.repoProfileName || conversation.repoProfileSlug
+      ? `- repo profile: ${conversation.repoProfileName || conversation.repoProfileSlug}`
+      : null,
+    conversation.workspaceBranchName ? `- branch: ${conversation.workspaceBranchName}` : null,
+    conversation.workspaceSimulatorName
+      ? `- simulator: ${conversation.workspaceSimulatorName}${conversation.workspaceSimulatorUdid ? ` (${conversation.workspaceSimulatorUdid})` : ''}`
+      : null,
+    conversation.workspaceMetroPort ? `- metro port: ${conversation.workspaceMetroPort}` : null,
+    conversation.workspaceEnvLabel ? `- env label: ${conversation.workspaceEnvLabel}` : null,
+    conversation.workspaceSyncStatus ? `- sync status: ${conversation.workspaceSyncStatus}` : null,
+    'Use these assigned workspace resources by default for commands, simulator launches, and local app verification unless the user explicitly asks for something else.'
+  ].filter(Boolean);
+
+  return lines.join('\n');
+}
+
 function toMessageAttachments(attachments: ImageAttachment[]): MessageAttachment[] {
   return attachments.map((attachment) => ({
     id: attachment.id,
@@ -81,17 +118,31 @@ function toMessageAttachments(attachments: ImageAttachment[]): MessageAttachment
   }));
 }
 
-function buildRunInput(prompt: string, attachments: ImageAttachment[]): Input {
+function buildRunInput(
+  prompt: string,
+  attachments: ImageAttachment[],
+  workspaceContext: string | null
+): Input {
+  const trimmedPrompt = prompt.trim();
+  const textSections = [
+    workspaceContext,
+    trimmedPrompt
+      ? `User request:\n${trimmedPrompt}`
+      : attachments.length
+        ? 'User request:\nReview the attached image inputs and respond based on them.'
+        : null
+  ].filter(Boolean);
+  const runText = textSections.join('\n\n').trim();
+
   if (!attachments.length) {
-    return prompt;
+    return runText;
   }
 
   const items: Extract<Input, unknown[]> = [];
-  const trimmedPrompt = prompt.trim();
-  if (trimmedPrompt) {
+  if (runText) {
     items.push({
       type: 'text',
-      text: trimmedPrompt
+      text: runText
     });
   }
 
@@ -156,6 +207,7 @@ export async function runConversationTurn(
   try {
     const codex = new Codex();
     const workingDirectory = ensureWorkspacePath(conversation.workspacePath);
+    const workspaceContext = buildWorkspaceContextBlock(conversation);
 
     const thread = conversation.codexThreadId
       ? codex.resumeThread(conversation.codexThreadId, {
@@ -177,7 +229,7 @@ export async function runConversationTurn(
           skipGitRepoCheck: !conversation.workspacePath
         });
 
-    const streamed = await thread.runStreamed(buildRunInput(prompt, attachments), {
+    const streamed = await thread.runStreamed(buildRunInput(prompt, attachments, workspaceContext), {
       signal: abortController.signal
     });
     let finalResponse = '';

@@ -19,6 +19,7 @@ export const publishProofVideoSchema = z.object({
 export const createConversationSchema = z.object({
   title: z.string().min(1).max(160),
   mode: z.enum(['chat', 'workspace', 'harness']).default('chat'),
+  workspaceId: z.string().trim().min(1).optional().nullable(),
   workspacePath: z.string().trim().min(1).optional().nullable()
 });
 

@@ -8,8 +8,10 @@ import type {
   ConversationRecord,
   MessageAttachment,
   MessageRecord,
+  RepoProfileRecord,
   RunEventRecord,
-  RunRecord
+  RunRecord,
+  WorkspaceRecord
 } from './types.js';
 
 function id() {
@@ -32,20 +34,255 @@ function requireData<T>(error: Error | null, data: T | null, context: string): T
   return data;
 }
 
+function firstRelation<T>(value: T | T[] | null | undefined): T | null {
+  if (!value) {
+    return null;
+  }
+
+  return Array.isArray(value) ? value[0] || null : value;
+}
+
+const REPO_PROFILE_SELECT = 'id,slug,name,base_local_path,default_branch';
+const WORKSPACE_SELECT = `
+  id,
+  slug,
+  name,
+  local_path,
+  branch_name,
+  simulator_name,
+  simulator_udid,
+  metro_port,
+  env_label,
+  supabase_project_ref,
+  state,
+  sync_status,
+  behind_count,
+  ahead_count,
+  last_synced_main_sha,
+  last_sync_checked_at,
+  sort_order,
+  repo_profile:dev_agent_repo_profiles!dev_agent_workspaces_repo_profile_id_fkey(${REPO_PROFILE_SELECT})
+`;
+const CONVERSATION_SELECT = `
+  id,
+  title,
+  mode,
+  workspace_id,
+  workspace_path,
+  codex_thread_id,
+  created_at,
+  updated_at,
+  workspace:dev_agent_workspaces!dev_agent_conversations_workspace_id_fkey(${WORKSPACE_SELECT})
+`;
+
+function mapRepoProfile(row: {
+  id: string;
+  slug: string;
+  name: string;
+  base_local_path: string;
+  default_branch: string;
+} | {
+  id: string;
+  slug: string;
+  name: string;
+  base_local_path: string;
+  default_branch: string;
+}[] | null | undefined): RepoProfileRecord | null {
+  const profile = firstRelation(row);
+  if (!profile) {
+    return null;
+  }
+
+  return {
+    id: profile.id,
+    slug: profile.slug,
+    name: profile.name,
+    baseLocalPath: profile.base_local_path,
+    defaultBranch: profile.default_branch
+  };
+}
+
+function mapWorkspace(row: {
+  id: string;
+  slug: string;
+  name: string;
+  local_path: string;
+  branch_name: string | null;
+  simulator_name: string | null;
+  simulator_udid: string | null;
+  metro_port: number | null;
+  env_label: string | null;
+  supabase_project_ref: string | null;
+  state: WorkspaceRecord['state'];
+  sync_status: WorkspaceRecord['syncStatus'];
+  behind_count: number | null;
+  ahead_count: number | null;
+  last_synced_main_sha: string | null;
+  last_sync_checked_at: string | null;
+  sort_order: number | null;
+  repo_profile?: {
+    id: string;
+    slug: string;
+    name: string;
+    base_local_path: string;
+    default_branch: string;
+  } | {
+    id: string;
+    slug: string;
+    name: string;
+    base_local_path: string;
+    default_branch: string;
+  }[] | null;
+} | {
+  id: string;
+  slug: string;
+  name: string;
+  local_path: string;
+  branch_name: string | null;
+  simulator_name: string | null;
+  simulator_udid: string | null;
+  metro_port: number | null;
+  env_label: string | null;
+  supabase_project_ref: string | null;
+  state: WorkspaceRecord['state'];
+  sync_status: WorkspaceRecord['syncStatus'];
+  behind_count: number | null;
+  ahead_count: number | null;
+  last_synced_main_sha: string | null;
+  last_sync_checked_at: string | null;
+  sort_order: number | null;
+  repo_profile?: {
+    id: string;
+    slug: string;
+    name: string;
+    base_local_path: string;
+    default_branch: string;
+  } | {
+    id: string;
+    slug: string;
+    name: string;
+    base_local_path: string;
+    default_branch: string;
+  }[] | null;
+}[] | null | undefined): WorkspaceRecord | null {
+  const workspace = firstRelation(row);
+  if (!workspace) {
+    return null;
+  }
+
+  return {
+    id: workspace.id,
+    slug: workspace.slug,
+    name: workspace.name,
+    localPath: workspace.local_path,
+    branchName: workspace.branch_name,
+    simulatorName: workspace.simulator_name,
+    simulatorUdid: workspace.simulator_udid,
+    metroPort: workspace.metro_port,
+    envLabel: workspace.env_label,
+    supabaseProjectRef: workspace.supabase_project_ref,
+    state: workspace.state,
+    syncStatus: workspace.sync_status,
+    behindCount: workspace.behind_count || 0,
+    aheadCount: workspace.ahead_count || 0,
+    lastSyncedMainSha: workspace.last_synced_main_sha,
+    lastSyncCheckedAt: workspace.last_sync_checked_at,
+    sortOrder: workspace.sort_order || 0,
+    repoProfile: mapRepoProfile(workspace.repo_profile)
+  };
+}
+
 function mapConversation(row: {
   id: string;
   title: string;
   mode: ConversationMode;
+  workspace_id: string | null;
   workspace_path: string | null;
   codex_thread_id: string | null;
   created_at: string;
   updated_at: string;
+  workspace?: {
+    id: string;
+    slug: string;
+    name: string;
+    local_path: string;
+    branch_name: string | null;
+    simulator_name: string | null;
+    simulator_udid: string | null;
+    metro_port: number | null;
+    env_label: string | null;
+    supabase_project_ref: string | null;
+    state: WorkspaceRecord['state'];
+    sync_status: WorkspaceRecord['syncStatus'];
+    behind_count: number | null;
+    ahead_count: number | null;
+    last_synced_main_sha: string | null;
+    last_sync_checked_at: string | null;
+    sort_order: number | null;
+    repo_profile?: {
+      id: string;
+      slug: string;
+      name: string;
+      base_local_path: string;
+      default_branch: string;
+    } | {
+      id: string;
+      slug: string;
+      name: string;
+      base_local_path: string;
+      default_branch: string;
+    }[] | null;
+  } | {
+    id: string;
+    slug: string;
+    name: string;
+    local_path: string;
+    branch_name: string | null;
+    simulator_name: string | null;
+    simulator_udid: string | null;
+    metro_port: number | null;
+    env_label: string | null;
+    supabase_project_ref: string | null;
+    state: WorkspaceRecord['state'];
+    sync_status: WorkspaceRecord['syncStatus'];
+    behind_count: number | null;
+    ahead_count: number | null;
+    last_synced_main_sha: string | null;
+    last_sync_checked_at: string | null;
+    sort_order: number | null;
+    repo_profile?: {
+      id: string;
+      slug: string;
+      name: string;
+      base_local_path: string;
+      default_branch: string;
+    } | {
+      id: string;
+      slug: string;
+      name: string;
+      base_local_path: string;
+      default_branch: string;
+    }[] | null;
+  }[] | null;
 }): ConversationRecord {
+  const workspace = mapWorkspace(row.workspace);
+
   return {
     id: row.id,
     title: row.title,
     mode: row.mode,
+    workspaceId: row.workspace_id,
     workspacePath: row.workspace_path,
+    workspaceName: workspace?.name || null,
+    workspaceSlug: workspace?.slug || null,
+    workspaceBranchName: workspace?.branchName || null,
+    workspaceSimulatorName: workspace?.simulatorName || null,
+    workspaceSimulatorUdid: workspace?.simulatorUdid || null,
+    workspaceMetroPort: workspace?.metroPort || null,
+    workspaceEnvLabel: workspace?.envLabel || null,
+    workspaceSyncStatus: workspace?.syncStatus || null,
+    repoProfileSlug: workspace?.repoProfile?.slug || null,
+    repoProfileName: workspace?.repoProfile?.name || null,
     codexThreadId: row.codex_thread_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -152,7 +389,7 @@ export async function listConversations(): Promise<ConversationRecord[]> {
   const supabase = getSupabaseAdmin();
   const { data, error } = await supabase
     .from('dev_agent_conversations')
-    .select('id,title,mode,workspace_path,codex_thread_id,created_at,updated_at')
+    .select(CONVERSATION_SELECT)
     .order('updated_at', { ascending: false });
 
   if (error) {
@@ -166,7 +403,7 @@ export async function getConversation(conversationId: string): Promise<Conversat
   const supabase = getSupabaseAdmin();
   const { data, error } = await supabase
     .from('dev_agent_conversations')
-    .select('id,title,mode,workspace_path,codex_thread_id,created_at,updated_at')
+    .select(CONVERSATION_SELECT)
     .eq('id', conversationId)
     .maybeSingle();
 
@@ -180,6 +417,7 @@ export async function getConversation(conversationId: string): Promise<Conversat
 export async function createConversation(input: {
   title: string;
   mode: ConversationMode;
+  workspaceId?: string | null;
   workspacePath?: string | null;
 }): Promise<ConversationRecord> {
   const supabase = getSupabaseAdmin();
@@ -187,6 +425,7 @@ export async function createConversation(input: {
     id: id(),
     title: input.title,
     mode: input.mode,
+    workspace_id: input.workspaceId || null,
     workspace_path: input.workspacePath || null,
     codex_thread_id: null,
     created_at: now(),
@@ -196,7 +435,7 @@ export async function createConversation(input: {
   const { data, error } = await supabase
     .from('dev_agent_conversations')
     .insert(record)
-    .select('id,title,mode,workspace_path,codex_thread_id,created_at,updated_at')
+    .select(CONVERSATION_SELECT)
     .single();
 
   return mapConversation(requireData(error, data, 'Failed to create conversation'));
@@ -232,10 +471,102 @@ export async function updateConversationTitle(
       updated_at: now()
     })
     .eq('id', conversationId)
-    .select('id,title,mode,workspace_path,codex_thread_id,created_at,updated_at')
+    .select(CONVERSATION_SELECT)
     .single();
 
   return mapConversation(requireData(error, data, 'Failed to update conversation title'));
+}
+
+export async function listWorkspaces(): Promise<WorkspaceRecord[]> {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from('dev_agent_workspaces')
+    .select(WORKSPACE_SELECT)
+    .eq('state', 'active')
+    .order('sort_order', { ascending: true })
+    .order('name', { ascending: true });
+
+  if (error) {
+    throw new Error(`Failed to list workspaces: ${error.message}`);
+  }
+
+  return (data || []).map((row) => mapWorkspace(row)).filter((row): row is WorkspaceRecord => Boolean(row));
+}
+
+export async function getWorkspace(workspaceId: string): Promise<WorkspaceRecord | null> {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from('dev_agent_workspaces')
+    .select(WORKSPACE_SELECT)
+    .eq('id', workspaceId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Failed to get workspace: ${error.message}`);
+  }
+
+  return mapWorkspace(data);
+}
+
+export async function updateWorkspaceSyncState(input: {
+  workspaceId: string;
+  syncStatus: WorkspaceRecord['syncStatus'];
+  behindCount: number;
+  aheadCount: number;
+  lastSyncedMainSha?: string | null;
+  lastSyncCheckedAt?: string | null;
+}): Promise<WorkspaceRecord> {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from('dev_agent_workspaces')
+    .update({
+      sync_status: input.syncStatus,
+      behind_count: input.behindCount,
+      ahead_count: input.aheadCount,
+      last_synced_main_sha: input.lastSyncedMainSha ?? null,
+      last_sync_checked_at: input.lastSyncCheckedAt ?? now(),
+      updated_at: now()
+    })
+    .eq('id', input.workspaceId)
+    .select(WORKSPACE_SELECT)
+    .single();
+
+  const workspace = mapWorkspace(requireData(error, data, 'Failed to update workspace sync state'));
+  if (!workspace) {
+    throw new Error('Failed to update workspace sync state: missing workspace');
+  }
+  return workspace;
+}
+
+export async function workspaceHasActiveRuns(workspaceId: string): Promise<boolean> {
+  const supabase = getSupabaseAdmin();
+  const { data: conversationRows, error: conversationError } = await supabase
+    .from('dev_agent_conversations')
+    .select('id')
+    .eq('workspace_id', workspaceId);
+
+  if (conversationError) {
+    throw new Error(`Failed to load workspace conversations: ${conversationError.message}`);
+  }
+
+  const conversationIds = (conversationRows || []).map((row) => row.id);
+  if (!conversationIds.length) {
+    return false;
+  }
+
+  const { data: runRows, error: runError } = await supabase
+    .from('dev_agent_runs')
+    .select('id')
+    .in('conversation_id', conversationIds)
+    .eq('status', 'running')
+    .is('completed_at', null)
+    .limit(1);
+
+  if (runError) {
+    throw new Error(`Failed to load workspace runs: ${runError.message}`);
+  }
+
+  return Boolean(runRows?.length);
 }
 
 export async function touchConversation(conversationId: string): Promise<void> {

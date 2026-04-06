@@ -1,10 +1,14 @@
 import React from 'react';
 import {
+  AppState,
+  type AppStateStatus,
   Animated,
   Easing,
   Image,
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
+  NativeModules,
   Platform,
   Pressable,
   SafeAreaView,
@@ -28,7 +32,18 @@ type Conversation = {
   id: string;
   title: string;
   mode: 'chat' | 'workspace' | 'harness';
+  workspaceId?: string | null;
   workspacePath?: string | null;
+  workspaceName?: string | null;
+  workspaceSlug?: string | null;
+  workspaceBranchName?: string | null;
+  workspaceSimulatorName?: string | null;
+  workspaceSimulatorUdid?: string | null;
+  workspaceMetroPort?: number | null;
+  workspaceEnvLabel?: string | null;
+  workspaceSyncStatus?: 'fresh' | 'stale' | 'syncing' | 'conflicted' | null;
+  repoProfileSlug?: string | null;
+  repoProfileName?: string | null;
 };
 
 type Message = {
@@ -64,7 +79,12 @@ type UploadedImageAttachment = {
   mimeType: string | null;
 };
 
-type QueuedSteerMap = Record<string, string>;
+type QueuedTurn = {
+  prompt: string;
+  selectedImages: SelectedImage[];
+};
+
+type QueuedTurnMap = Record<string, QueuedTurn>;
 
 type ActivityItem = {
   id: string;
@@ -131,38 +151,30 @@ type TimelineEntry =
 
 type ThemeMode = 'dark' | 'light';
 type ViewMode = 'chat' | 'settings';
+type ConnectionState = 'connecting' | 'connected' | 'disconnected';
 type ContextMessage = Pick<Message, 'id' | 'role' | 'content' | 'attachments'>;
-type WorkspaceValidation =
-  | {
-      state: 'idle';
-      message: string;
-      resolvedPath: string | null;
-      isGitRepo: boolean;
-    }
-  | {
-      state: 'checking';
-      message: string;
-      resolvedPath: string | null;
-      isGitRepo: boolean;
-    }
-  | {
-      state: 'valid';
-      message: string;
-      resolvedPath: string | null;
-      isGitRepo: boolean;
-    }
-  | {
-      state: 'invalid';
-      message: string;
-      resolvedPath: string | null;
-      isGitRepo: boolean;
-    };
-
-type WorkspaceQuickPick = {
+type Workspace = {
   id: string;
-  label: string;
-  description: string;
-  path: string | null;
+  slug: string;
+  name: string;
+  localPath: string;
+  branchName: string | null;
+  simulatorName: string | null;
+  simulatorUdid: string | null;
+  metroPort: number | null;
+  envLabel: string | null;
+  supabaseProjectRef?: string | null;
+  state?: 'active' | 'archived';
+  syncStatus?: 'fresh' | 'stale' | 'syncing' | 'conflicted';
+  behindCount?: number;
+  aheadCount?: number;
+  repoProfile?: {
+    id: string;
+    slug: string;
+    name: string;
+    baseLocalPath: string;
+    defaultBranch: string;
+  } | null;
 };
 
 type Theme = {
@@ -229,33 +241,6 @@ const LANDING_PROMPTS: LandingPrompt[] = [
     eyebrow: 'Harness pass',
     title: 'Run the verification loop and report it back',
     prompt: 'Run the harness and report the smoke command.'
-  }
-];
-
-const WORKSPACE_QUICK_PICKS: WorkspaceQuickPick[] = [
-  {
-    id: 'general',
-    label: 'General chat',
-    description: 'No repo binding. Best for questions and planning.',
-    path: null
-  },
-  {
-    id: 'dev-agent',
-    label: 'Dev Agent',
-    description: '/Users/team7agent/dev-agent',
-    path: '/Users/team7agent/dev-agent'
-  },
-  {
-    id: 'stick2it-app',
-    label: 'Stick2It App',
-    description: '/Users/team7agent/stick2it/stick2it',
-    path: '/Users/team7agent/stick2it/stick2it'
-  },
-  {
-    id: 'stick2it-admin',
-    label: 'Stick2It Admin',
-    description: '/Users/team7agent/stick2it/admin',
-    path: '/Users/team7agent/stick2it/admin'
   }
 ];
 
@@ -388,11 +373,69 @@ const extra = (Constants.expoConfig?.extra || {}) as {
   wsUrl?: string;
 };
 
+function deriveLocalBridgeUrls(): { apiUrl: string; wsUrl: string } | null {
+  const scriptUrl = NativeModules.SourceCode?.scriptURL;
+  if (typeof scriptUrl !== 'string' || !scriptUrl.startsWith('http')) {
+    return null;
+  }
+
+  try {
+    const bundleUrl = new URL(scriptUrl);
+    const host = bundleUrl.hostname || 'localhost';
+    const apiProtocol = bundleUrl.protocol === 'https:' ? 'https:' : 'http:';
+    const wsProtocol = apiProtocol === 'https:' ? 'wss:' : 'ws:';
+    return {
+      apiUrl: `${apiProtocol}//${host}:4242`,
+      wsUrl: `${wsProtocol}//${host}:4242/ws`
+    };
+  } catch {
+    return null;
+  }
+}
+
+const localDevBridge = __DEV__ ? deriveLocalBridgeUrls() : null;
+const configuredApiUrl = process.env.EXPO_PUBLIC_DEV_AGENT_API_URL || extra.apiUrl || 'http://localhost:4242';
+const configuredWsUrl = process.env.EXPO_PUBLIC_DEV_AGENT_WS_URL || extra.wsUrl || 'ws://localhost:4242/ws';
 const API_URL = String(
-  process.env.EXPO_PUBLIC_DEV_AGENT_API_URL || extra.apiUrl || 'http://localhost:4242'
+  (__DEV__ ? localDevBridge?.apiUrl || configuredApiUrl : configuredApiUrl)
 ).replace(/\/+$/, '');
-const WS_URL = String(process.env.EXPO_PUBLIC_DEV_AGENT_WS_URL || extra.wsUrl || 'ws://localhost:4242/ws');
+const WS_URL = String(
+  __DEV__ ? localDevBridge?.wsUrl || configuredWsUrl : configuredWsUrl
+);
 const THEME_STORAGE_KEY = 'dev-agent-theme-mode';
+const MAX_SOCKET_RECONNECT_DELAY_MS = 10000;
+const WORKSPACE_SYNC_REFRESH_INTERVAL_MS = 3 * 60 * 1000;
+
+function summarizeResponseText(value: string): string {
+  const trimmed = value.trim().replace(/\s+/g, ' ');
+  if (!trimmed) {
+    return '';
+  }
+
+  return trimmed.length > 140 ? `${trimmed.slice(0, 137)}...` : trimmed;
+}
+
+async function readResponsePayload<T>(response: Response): Promise<T> {
+  const rawBody = await response.text();
+  if (!rawBody) {
+    return {} as T;
+  }
+
+  try {
+    return JSON.parse(rawBody) as T;
+  } catch {
+    const responseSummary = summarizeResponseText(rawBody);
+    if (!response.ok) {
+      throw new Error(
+        responseSummary
+          ? `Dev Agent server returned ${response.status}: ${responseSummary}`
+          : `Dev Agent server returned ${response.status}.`
+      );
+    }
+
+    throw new Error('Dev Agent server returned an unexpected response.');
+  }
+}
 
 const THEMES: Record<ThemeMode, Theme> = {
   dark: {
@@ -461,18 +504,91 @@ function formatModeLabel(mode: Conversation['mode']): string {
   return 'Chat';
 }
 
-function formatWorkspaceLabel(workspacePath?: string | null): string {
-  if (!workspacePath) {
+function formatWorkspaceLabel(conversation?: Conversation | null): string {
+  if (!conversation) {
     return 'General chat';
   }
 
-  const matched = WORKSPACE_QUICK_PICKS.find((item) => item.path === workspacePath);
-  if (matched) {
-    return matched.label;
+  if (conversation.workspaceName) {
+    return conversation.workspaceName;
   }
 
-  const segments = workspacePath.split('/').filter(Boolean);
-  return segments[segments.length - 1] || workspacePath;
+  if (!conversation.workspacePath) {
+    return 'General chat';
+  }
+
+  const segments = conversation.workspacePath.split('/').filter(Boolean);
+  return segments[segments.length - 1] || conversation.workspacePath;
+}
+
+function formatWorkspaceSubtitle(workspace: Workspace): string {
+  const detailParts = [
+    workspace.repoProfile?.name || null,
+    workspace.branchName ? `branch ${workspace.branchName}` : null,
+    workspace.metroPort ? `port ${workspace.metroPort}` : null,
+    workspace.simulatorName || null,
+    workspace.envLabel ? `env ${workspace.envLabel}` : null
+  ].filter(Boolean);
+
+  if (detailParts.length) {
+    return detailParts.join(' • ');
+  }
+
+  return workspace.localPath;
+}
+
+function formatWorkspaceSyncSummary(workspace: Pick<Workspace, 'syncStatus' | 'behindCount' | 'aheadCount'>): string {
+  if (workspace.syncStatus === 'syncing') {
+    return 'Syncing with main...';
+  }
+
+  if (workspace.syncStatus === 'conflicted') {
+    return 'Conflicted while syncing with main';
+  }
+
+  if ((workspace.behindCount || 0) > 0) {
+    const behindCount = workspace.behindCount || 0;
+    return behindCount === 1 ? 'Behind main by 1 commit' : `Behind main by ${behindCount} commits`;
+  }
+
+  if (workspace.syncStatus === 'stale') {
+    return 'Workspace has local changes and needs attention';
+  }
+
+  const aheadCount = workspace.aheadCount || 0;
+  if (aheadCount > 0) {
+    return aheadCount === 1 ? 'Fresh relative to main, ahead by 1 commit' : `Fresh relative to main, ahead by ${aheadCount} commits`;
+  }
+
+  return 'Fresh with main';
+}
+
+function shouldOfferWorkspaceSync(workspace: Pick<Workspace, 'syncStatus' | 'behindCount'> | null | undefined): boolean {
+  if (!workspace) {
+    return false;
+  }
+
+  return workspace.syncStatus === 'conflicted' || workspace.syncStatus === 'stale' || (workspace.behindCount || 0) > 0;
+}
+
+function formatConversationMeta(conversation?: Conversation | null): string {
+  if (!conversation) {
+    return 'General chat';
+  }
+
+  const workspaceLabel = formatWorkspaceLabel(conversation);
+  const detailParts = [
+    conversation.workspaceBranchName ? `branch ${conversation.workspaceBranchName}` : null,
+    conversation.workspaceMetroPort ? `port ${conversation.workspaceMetroPort}` : null,
+    conversation.workspaceSimulatorName || null,
+    conversation.workspaceEnvLabel ? `env ${conversation.workspaceEnvLabel}` : null
+  ].filter(Boolean);
+
+  if (!detailParts.length) {
+    return workspaceLabel;
+  }
+
+  return `${workspaceLabel} • ${detailParts.join(' • ')}`;
 }
 
 function formatSandboxModeLabel(sandboxMode: string | null | undefined): string {
@@ -1619,6 +1735,21 @@ function createStyles(theme: Theme, sidebarWidth: number) {
       backgroundColor: theme.surfaceAlt,
       padding: 12
     },
+    composerHandleTouchArea: {
+      alignSelf: 'center',
+      width: 52,
+      paddingTop: 2,
+      paddingBottom: 10,
+      alignItems: 'center',
+      justifyContent: 'center'
+    },
+    composerHandle: {
+      width: 40,
+      height: 5,
+      borderRadius: 999,
+      backgroundColor: theme.textSubtle,
+      opacity: 0.55
+    },
     queuedSteerCard: {
       borderRadius: 16,
       borderWidth: 1,
@@ -1842,6 +1973,7 @@ export default function App() {
   const { width } = useWindowDimensions();
   const sidebarWidth = Math.min(width * 0.84, 340);
   const [conversations, setConversations] = React.useState<Conversation[]>([]);
+  const [workspaces, setWorkspaces] = React.useState<Workspace[]>([]);
   const [activeConversationId, setActiveConversationId] = React.useState<string | null>(null);
   const [messages, setMessages] = React.useState<Message[]>([]);
   const [activities, setActivities] = React.useState<ActivityItem[]>([]);
@@ -1849,44 +1981,66 @@ export default function App() {
   const [selectedImages, setSelectedImages] = React.useState<SelectedImage[]>([]);
   const [draft, setDraft] = React.useState('');
   const [status, setStatus] = React.useState('Connecting to Dev Agent...');
+  const [connectionState, setConnectionState] = React.useState<ConnectionState>('connecting');
   const [runtime, setRuntime] = React.useState<RuntimeConfig | null>(null);
   const [sidebarVisible, setSidebarVisible] = React.useState(false);
   const [viewMode, setViewMode] = React.useState<ViewMode>('chat');
   const [themeMode, setThemeMode] = React.useState<ThemeMode>('dark');
   const [themeReady, setThemeReady] = React.useState(false);
+  const [composerFocused, setComposerFocused] = React.useState(false);
+  const [keyboardVisible, setKeyboardVisible] = React.useState(false);
   const [activeRun, setActiveRun] = React.useState<{ conversationId: string; runId: string; startedAt: string } | null>(null);
   const [thinkingFrame, setThinkingFrame] = React.useState(0);
   const [runClock, setRunClock] = React.useState(0);
   const [copyToastVisible, setCopyToastVisible] = React.useState(false);
   const [contextMessage, setContextMessage] = React.useState<ContextMessage | null>(null);
-  const [queuedSteers, setQueuedSteers] = React.useState<QueuedSteerMap>({});
-  const [steerModalVisible, setSteerModalVisible] = React.useState(false);
-  const [steerDraft, setSteerDraft] = React.useState('');
+  const [queuedTurns, setQueuedTurns] = React.useState<QueuedTurnMap>({});
   const [newChatSheetVisible, setNewChatSheetVisible] = React.useState(false);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = React.useState<string>('general');
-  const [workspaceDraft, setWorkspaceDraft] = React.useState('');
-  const [workspaceValidation, setWorkspaceValidation] = React.useState<WorkspaceValidation>({
-    state: 'idle',
-    message: 'Choose a quick pick or enter an absolute directory path.',
-    resolvedPath: null,
-    isGitRepo: false
-  });
+  const [workspaceLoadError, setWorkspaceLoadError] = React.useState<string | null>(null);
+  const [loadingWorkspaces, setLoadingWorkspaces] = React.useState(false);
+  const [syncingWorkspaceId, setSyncingWorkspaceId] = React.useState<string | null>(null);
   const [creatingConversation, setCreatingConversation] = React.useState(false);
   const socketRef = React.useRef<WebSocket | null>(null);
+  const socketSequenceRef = React.useRef(0);
+  const reconnectTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptsRef = React.useRef(0);
+  const appStateRef = React.useRef<AppStateStatus>(AppState.currentState);
+  const shouldMaintainSocketRef = React.useRef(true);
   const messageListRef = React.useRef<ScrollView | null>(null);
+  const composerInputRef = React.useRef<TextInput | null>(null);
+  const composerTouchStartYRef = React.useRef<number | null>(null);
   const activeConversationIdRef = React.useRef<string | null>(null);
   const activeRunRef = React.useRef<{ conversationId: string; runId: string; startedAt: string } | null>(null);
-  const previousActiveRunRef = React.useRef<{ conversationId: string; runId: string; startedAt: string } | null>(null);
-  const queuedSteersRef = React.useRef<QueuedSteerMap>({});
-  const dispatchQueuedSteerRef = React.useRef<(conversationId: string, prompt: string) => void>(() => {});
-  const queuedSteerDispatchingRef = React.useRef<Record<string, string>>({});
+  const queuedTurnsRef = React.useRef<QueuedTurnMap>({});
+  const dispatchQueuedTurnRef = React.useRef<(conversationId: string, queuedTurn: QueuedTurn) => void>(() => {});
+  const queuedTurnDispatchingRef = React.useRef<Record<string, boolean>>({});
   const copyToastTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const contextAnimation = React.useRef(new Animated.Value(0)).current;
   const landingEntrance = React.useRef(new Animated.Value(0)).current;
   const landingFloat = React.useRef(new Animated.Value(0)).current;
+  const sidebarAnimation = React.useRef(new Animated.Value(0)).current;
+  const composerDragOffset = React.useRef(new Animated.Value(0)).current;
   const theme = THEMES[themeMode];
   const styles = React.useMemo(() => createStyles(theme, sidebarWidth), [theme, sidebarWidth]);
   const compactLanding = width < 410;
+
+  React.useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSubscription = Keyboard.addListener(showEvent, () => {
+      setKeyboardVisible(true);
+    });
+    const hideSubscription = Keyboard.addListener(hideEvent, () => {
+      setKeyboardVisible(false);
+      composerDragOffset.setValue(0);
+    });
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, [composerDragOffset]);
 
   const activeConversation = React.useMemo(
     () => conversations.find((item) => item.id === activeConversationId) || null,
@@ -1901,27 +2055,92 @@ export default function App() {
       return true;
     }
 
-    return workspaceValidation.state === 'valid';
-  }, [creatingConversation, selectedWorkspaceId, workspaceValidation.state]);
-
-  const statusTestId = React.useMemo(() => {
-    if (status === 'Codex turn completed') {
-      return 'status-completed';
-    }
-
-    return 'status-text';
-  }, [status]);
+    return workspaces.some((workspace) => workspace.id === selectedWorkspaceId);
+  }, [creatingConversation, selectedWorkspaceId, workspaces]);
 
   const activeConversationIsRunning = React.useMemo(
     () => activeRun?.conversationId === activeConversationId,
     [activeConversationId, activeRun]
   );
-  const queuedSteer = React.useMemo(
-    () => (activeConversationId ? queuedSteers[activeConversationId] || '' : ''),
-    [activeConversationId, queuedSteers]
+  const topBarStatus = React.useMemo(() => {
+    if (viewMode === 'settings') {
+      return `Theme: ${themeMode}`;
+    }
+
+    if (connectionState === 'disconnected') {
+      return 'Disconnected from Dev Agent';
+    }
+
+    if (connectionState === 'connecting') {
+      return activeConversationIsRunning ? 'Reconnecting to active run...' : 'Reconnecting to Dev Agent...';
+    }
+
+    return status;
+  }, [activeConversationIsRunning, connectionState, status, themeMode, viewMode]);
+  const statusTestId = React.useMemo(() => {
+    if (topBarStatus === 'Codex turn completed') {
+      return 'status-completed';
+    }
+
+    if (connectionState === 'disconnected') {
+      return 'status-disconnected';
+    }
+
+    return 'status-text';
+  }, [connectionState, topBarStatus]);
+  const queuedTurn = React.useMemo(
+    () => (activeConversationId ? queuedTurns[activeConversationId] || null : null),
+    [activeConversationId, queuedTurns]
   );
-  const chromeBackground = sidebarVisible ? theme.sidebar : theme.safeArea;
-  const shellBackground = sidebarVisible ? theme.sidebar : theme.shell;
+  const selectedWorkspace = React.useMemo(
+    () => workspaces.find((workspace) => workspace.id === selectedWorkspaceId) || null,
+    [selectedWorkspaceId, workspaces]
+  );
+  const activeWorkspace = React.useMemo(
+    () => workspaces.find((workspace) => workspace.id === activeConversation?.workspaceId) || null,
+    [activeConversation?.workspaceId, workspaces]
+  );
+  const activeWorkspaceNeedsSync = React.useMemo(
+    () => shouldOfferWorkspaceSync(activeWorkspace),
+    [activeWorkspace]
+  );
+  const activeWorkspaceMetaLabel = React.useMemo(() => {
+    if (!activeConversation) {
+      return 'General chat';
+    }
+
+    const baseLabel = formatConversationMeta(activeConversation);
+    if (!activeWorkspace) {
+      return baseLabel;
+    }
+
+    return `${baseLabel} • ${formatWorkspaceSyncSummary(activeWorkspace)}`;
+  }, [activeConversation, activeWorkspace]);
+  const queuedTurnPreview = React.useMemo(() => {
+    if (!queuedTurn) {
+      return '';
+    }
+
+    const prompt = queuedTurn.prompt.trim();
+    if (prompt) {
+      return prompt;
+    }
+
+    if (queuedTurn.selectedImages.length === 1) {
+      return '1 image attachment';
+    }
+
+    return `${queuedTurn.selectedImages.length} image attachments`;
+  }, [queuedTurn]);
+  const chromeBackground = theme.safeArea;
+  const shellBackground = theme.shell;
+  const composerActive = keyboardVisible || composerFocused;
+  const composerDockTestId = composerActive ? 'composer-dock-raised' : 'composer-dock-resting';
+  const sidebarPanelTestId = sidebarVisible ? 'sidebar-panel-open' : 'sidebar-panel-closed';
+  const composerHasContent = React.useMemo(
+    () => draft.trim().length > 0 || selectedImages.length > 0,
+    [draft, selectedImages]
+  );
 
   const recentActivityFeed = React.useMemo(
     () => activities.slice(-12).reverse(),
@@ -1980,168 +2199,169 @@ export default function App() {
     return ordinals;
   }, [messages]);
 
+  const clearReconnectTimeout = React.useCallback(() => {
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+  }, []);
+
+  const syncActiveRunFromRuns = React.useCallback((conversationId: string, nextRuns: RunRecord[]) => {
+    const runningRun = [...nextRuns]
+      .reverse()
+      .find((run) => run.status === 'running' && !run.completedAt);
+
+    if (runningRun) {
+      const nextActiveRun = {
+        conversationId,
+        runId: runningRun.id,
+        startedAt: runningRun.startedAt
+      };
+      const currentActiveRun = activeRunRef.current;
+      const changed =
+        currentActiveRun?.conversationId !== nextActiveRun.conversationId
+        || currentActiveRun?.runId !== nextActiveRun.runId;
+
+      setActiveRun(nextActiveRun);
+      if (changed && conversationId === activeConversationIdRef.current) {
+        setStatus(`Running Codex turn ${runningRun.id.slice(0, 8)}...`);
+      }
+      return;
+    }
+
+    if (activeRunRef.current?.conversationId === conversationId) {
+      setActiveRun(null);
+      if (conversationId === activeConversationIdRef.current) {
+        const latestRun = nextRuns[nextRuns.length - 1];
+        if (latestRun?.status === 'completed') {
+          setStatus('Codex turn completed');
+        } else if (latestRun?.status === 'failed') {
+          setStatus('Codex turn no longer active');
+        }
+      }
+    }
+  }, []);
+
   const loadConversations = React.useCallback(async () => {
     const response = await fetch(`${API_URL}/api/conversations`);
-    const payload = await response.json();
+    const payload = await readResponsePayload<{ conversations?: Conversation[]; error?: string }>(response);
+    if (!response.ok) {
+      throw new Error(payload.error || 'Failed to load conversations.');
+    }
     setConversations(payload.conversations || []);
     if (!activeConversationId && payload.conversations?.length) {
       setActiveConversationId(payload.conversations[0].id);
     }
   }, [activeConversationId]);
 
+  const loadWorkspaces = React.useCallback(async (options: { refresh?: boolean } = {}) => {
+    setLoadingWorkspaces(true);
+    setWorkspaceLoadError(null);
+
+    try {
+      const response = await fetch(`${API_URL}/api/workspaces${options.refresh ? '?refresh=1' : ''}`);
+      const payload = await readResponsePayload<{ workspaces?: Workspace[]; error?: string }>(response);
+      if (!response.ok) {
+        throw new Error(payload.error || 'Failed to load workspaces.');
+      }
+      setWorkspaces(payload.workspaces || []);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load workspaces.';
+      setWorkspaceLoadError(message);
+      throw error;
+    } finally {
+      setLoadingWorkspaces(false);
+    }
+  }, []);
+
   const loadConversationDetail = React.useCallback(async (conversationId: string) => {
     const response = await fetch(`${API_URL}/api/conversations/${conversationId}`);
-    const payload = await response.json();
-    setMessages(payload.messages || []);
-    setActivities(payload.activities || []);
-    setRuns(payload.runs || []);
-  }, []);
+    const payload = await readResponsePayload<{
+      messages?: Message[];
+      activities?: ActivityItem[];
+      runs?: RunRecord[];
+      error?: string;
+    }>(response);
+    if (!response.ok) {
+      throw new Error(payload.error || 'Failed to load conversation.');
+    }
+    const nextMessages = payload.messages || [];
+    const nextActivities = payload.activities || [];
+    const nextRuns = payload.runs || [];
+    setMessages(nextMessages);
+    setActivities(nextActivities);
+    setRuns(nextRuns);
+    syncActiveRunFromRuns(conversationId, nextRuns);
+  }, [syncActiveRunFromRuns]);
 
   const loadRuntime = React.useCallback(async () => {
     const response = await fetch(`${API_URL}/api/runtime-config`);
-    const payload = await response.json();
+    const payload = await readResponsePayload<{ runtime?: RuntimeConfig; error?: string }>(response);
+    if (!response.ok) {
+      throw new Error(payload.error || 'Failed to load runtime config.');
+    }
     setRuntime(payload.runtime || null);
   }, []);
 
-  React.useEffect(() => {
-    activeConversationIdRef.current = activeConversationId;
-  }, [activeConversationId]);
-
-  React.useEffect(() => {
-    activeRunRef.current = activeRun;
-  }, [activeRun]);
-
-  React.useEffect(() => {
-    queuedSteersRef.current = queuedSteers;
-  }, [queuedSteers]);
-
-  React.useEffect(() => {
-    return () => {
-      if (copyToastTimeoutRef.current) {
-        clearTimeout(copyToastTimeoutRef.current);
-      }
-    };
-  }, []);
-
-  React.useEffect(() => {
-    if (contextMessage) {
-      contextAnimation.setValue(0);
-      Animated.parallel([
-        Animated.timing(contextAnimation, {
-          toValue: 1,
-          duration: 180,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true
-        })
-      ]).start();
-      return;
-    }
-
-    contextAnimation.stopAnimation();
-    contextAnimation.setValue(0);
-  }, [contextAnimation, contextMessage]);
-
-  React.useEffect(() => {
-    let entranceAnimation: Animated.CompositeAnimation | null = null;
-    let floatLoop: Animated.CompositeAnimation | null = null;
-
-    if (!landingVisible) {
-      landingEntrance.stopAnimation();
-      landingFloat.stopAnimation();
-      landingEntrance.setValue(0);
-      landingFloat.setValue(0);
-      return;
-    }
-
-    landingEntrance.setValue(0);
-    landingFloat.setValue(0);
-    entranceAnimation = Animated.timing(landingEntrance, {
-      toValue: 1,
-      duration: 540,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true
-    });
-    floatLoop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(landingFloat, {
-          toValue: 1,
-          duration: 2400,
-          easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true
-        }),
-        Animated.timing(landingFloat, {
-          toValue: 0,
-          duration: 2400,
-          easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true
-        })
-      ])
+  const applyWorkspaceUpdate = React.useCallback((workspace: Workspace) => {
+    setWorkspaces((current) =>
+      current.map((item) => (item.id === workspace.id ? workspace : item))
     );
-
-    entranceAnimation.start();
-    floatLoop.start();
-
-    return () => {
-      entranceAnimation?.stop();
-      floatLoop?.stop();
-      landingEntrance.stopAnimation();
-      landingFloat.stopAnimation();
-    };
-  }, [landingEntrance, landingFloat, landingVisible]);
-
-  React.useEffect(() => {
-    AsyncStorage.getItem(THEME_STORAGE_KEY)
-      .then((value) => {
-        if (value === 'light' || value === 'dark') {
-          setThemeMode(value);
-        }
-      })
-      .finally(() => {
-        setThemeReady(true);
-      });
   }, []);
 
-  React.useEffect(() => {
-    if (!themeReady) {
+  const refreshConversationState = React.useCallback(async () => {
+    await Promise.allSettled([loadRuntime(), loadConversations(), loadWorkspaces({ refresh: true })]);
+    const currentConversationId = activeConversationIdRef.current;
+    if (currentConversationId) {
+      await loadConversationDetail(currentConversationId);
+    }
+  }, [loadConversationDetail, loadConversations, loadRuntime, loadWorkspaces]);
+
+  const connectSocket = React.useCallback((force = false) => {
+    if (!shouldMaintainSocketRef.current) {
       return;
     }
 
-    AsyncStorage.setItem(THEME_STORAGE_KEY, themeMode).catch(() => {
-      // Keep the UI responsive even if local persistence fails.
-    });
-  }, [themeMode, themeReady]);
-
-  React.useEffect(() => {
-    loadConversations().catch((error) => {
-      setStatus(error instanceof Error ? error.message : 'Failed to load conversations.');
-    });
-  }, [loadConversations]);
-
-  React.useEffect(() => {
-    loadRuntime().catch((error) => {
-      setStatus(error instanceof Error ? error.message : 'Failed to load runtime config.');
-    });
-  }, [loadRuntime]);
-
-  React.useEffect(() => {
-    if (!activeConversationId) {
+    const existingSocket = socketRef.current;
+    if (!force && existingSocket && (
+      existingSocket.readyState === WebSocket.CONNECTING
+      || existingSocket.readyState === WebSocket.OPEN
+    )) {
       return;
     }
 
-    loadConversationDetail(activeConversationId).catch((error) => {
-      setStatus(error instanceof Error ? error.message : 'Failed to load messages.');
-    });
-  }, [activeConversationId, loadConversationDetail]);
+    const sequence = socketSequenceRef.current + 1;
+    socketSequenceRef.current = sequence;
 
-  React.useEffect(() => {
+    if (force && existingSocket && (
+      existingSocket.readyState === WebSocket.CONNECTING
+      || existingSocket.readyState === WebSocket.OPEN
+    )) {
+      existingSocket.close();
+    }
+
+    clearReconnectTimeout();
+    setConnectionState('connecting');
+    setStatus('Connecting to Dev Agent...');
+
     const socket = new WebSocket(WS_URL);
     socketRef.current = socket;
 
     socket.onopen = () => {
+      if (socketSequenceRef.current !== sequence) {
+        return;
+      }
+
+      reconnectAttemptsRef.current = 0;
+      setConnectionState('connected');
       setStatus('Connected to Dev Agent');
     };
 
     socket.onmessage = (message) => {
+      if (socketSequenceRef.current !== sequence) {
+        return;
+      }
+
       let event: ServerRunEvent;
       try {
         event = JSON.parse(message.data);
@@ -2152,6 +2372,9 @@ export default function App() {
       if (event.type === 'connection.ready') {
         setRuntime(event.runtime);
         setStatus('Codex bridge ready');
+        refreshConversationState().catch((error) => {
+          setStatus(error instanceof Error ? error.message : 'Failed to refresh conversation state.');
+        });
         return;
       }
 
@@ -2165,7 +2388,7 @@ export default function App() {
       if (event.type === 'conversation.message.created') {
         if (event.conversationId === activeConversationIdRef.current) {
           setMessages((current) => {
-            const alreadyPresent = current.some((message) => message.id === event.message.id);
+            const alreadyPresent = current.some((item) => item.id === event.message.id);
             return alreadyPresent ? current : [...current, event.message];
           });
         }
@@ -2299,18 +2522,235 @@ export default function App() {
     };
 
     socket.onerror = () => {
+      if (socketSequenceRef.current !== sequence) {
+        return;
+      }
+
       setStatus('WebSocket connection error');
     };
 
     socket.onclose = () => {
-      setActiveRun(null);
-      setStatus('Disconnected from Dev Agent');
+      if (socketSequenceRef.current !== sequence) {
+        return;
+      }
+
+      if (socketRef.current === socket) {
+        socketRef.current = null;
+      }
+
+      setConnectionState('disconnected');
+
+      if (!shouldMaintainSocketRef.current) {
+        return;
+      }
+
+      if (appStateRef.current !== 'active') {
+        return;
+      }
+
+      const nextAttempt = reconnectAttemptsRef.current + 1;
+      reconnectAttemptsRef.current = nextAttempt;
+      const delay = Math.min(1000 * 2 ** (nextAttempt - 1), MAX_SOCKET_RECONNECT_DELAY_MS);
+
+      clearReconnectTimeout();
+      setConnectionState('connecting');
+      setStatus(nextAttempt === 1 ? 'Reconnecting to Dev Agent...' : `Reconnecting to Dev Agent (${nextAttempt})...`);
+      reconnectTimeoutRef.current = setTimeout(() => {
+        reconnectTimeoutRef.current = null;
+        connectSocket(true);
+      }, delay);
     };
+  }, [clearReconnectTimeout, loadConversationDetail, refreshConversationState]);
+
+  React.useEffect(() => {
+    activeConversationIdRef.current = activeConversationId;
+  }, [activeConversationId]);
+
+  React.useEffect(() => {
+    activeRunRef.current = activeRun;
+  }, [activeRun]);
+
+  React.useEffect(() => {
+    queuedTurnsRef.current = queuedTurns;
+  }, [queuedTurns]);
+
+  React.useEffect(() => {
+    return () => {
+      if (copyToastTimeoutRef.current) {
+        clearTimeout(copyToastTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  React.useEffect(() => {
+    if (contextMessage) {
+      contextAnimation.setValue(0);
+      Animated.parallel([
+        Animated.timing(contextAnimation, {
+          toValue: 1,
+          duration: 180,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true
+        })
+      ]).start();
+      return;
+    }
+
+    contextAnimation.stopAnimation();
+    contextAnimation.setValue(0);
+  }, [contextAnimation, contextMessage]);
+
+  React.useEffect(() => {
+    let entranceAnimation: Animated.CompositeAnimation | null = null;
+    let floatLoop: Animated.CompositeAnimation | null = null;
+
+    if (!landingVisible) {
+      landingEntrance.stopAnimation();
+      landingFloat.stopAnimation();
+      landingEntrance.setValue(0);
+      landingFloat.setValue(0);
+      return;
+    }
+
+    landingEntrance.setValue(0);
+    landingFloat.setValue(0);
+    entranceAnimation = Animated.timing(landingEntrance, {
+      toValue: 1,
+      duration: 540,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true
+    });
+    floatLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(landingFloat, {
+          toValue: 1,
+          duration: 2400,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true
+        }),
+        Animated.timing(landingFloat, {
+          toValue: 0,
+          duration: 2400,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true
+        })
+      ])
+    );
+
+    entranceAnimation.start();
+    floatLoop.start();
 
     return () => {
-      socket.close();
+      entranceAnimation?.stop();
+      floatLoop?.stop();
+      landingEntrance.stopAnimation();
+      landingFloat.stopAnimation();
     };
-  }, [loadConversationDetail]);
+  }, [landingEntrance, landingFloat, landingVisible]);
+
+  React.useEffect(() => {
+    AsyncStorage.getItem(THEME_STORAGE_KEY)
+      .then((value) => {
+        if (value === 'light' || value === 'dark') {
+          setThemeMode(value);
+        }
+      })
+      .finally(() => {
+        setThemeReady(true);
+      });
+  }, []);
+
+  React.useEffect(() => {
+    if (!themeReady) {
+      return;
+    }
+
+    AsyncStorage.setItem(THEME_STORAGE_KEY, themeMode).catch(() => {
+      // Keep the UI responsive even if local persistence fails.
+    });
+  }, [themeMode, themeReady]);
+
+  React.useEffect(() => {
+    loadConversations().catch((error) => {
+      setStatus(error instanceof Error ? error.message : 'Failed to load conversations.');
+    });
+  }, [loadConversations]);
+
+  React.useEffect(() => {
+    loadRuntime().catch((error) => {
+      setStatus(error instanceof Error ? error.message : 'Failed to load runtime config.');
+    });
+  }, [loadRuntime]);
+
+  React.useEffect(() => {
+    loadWorkspaces({ refresh: true }).catch((error) => {
+      setStatus(error instanceof Error ? error.message : 'Failed to load workspaces.');
+    });
+  }, [loadWorkspaces]);
+
+  React.useEffect(() => {
+    if (!activeConversationId) {
+      return;
+    }
+
+    loadConversationDetail(activeConversationId).catch((error) => {
+      setStatus(error instanceof Error ? error.message : 'Failed to load messages.');
+    });
+  }, [activeConversationId, loadConversationDetail]);
+
+  React.useEffect(() => {
+    shouldMaintainSocketRef.current = true;
+    connectSocket();
+
+    return () => {
+      shouldMaintainSocketRef.current = false;
+      clearReconnectTimeout();
+      socketSequenceRef.current += 1;
+      const socket = socketRef.current;
+      socketRef.current = null;
+      if (socket && (
+        socket.readyState === WebSocket.CONNECTING
+        || socket.readyState === WebSocket.OPEN
+      )) {
+        socket.close();
+      }
+    };
+  }, [clearReconnectTimeout, connectSocket]);
+
+  React.useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      appStateRef.current = nextState;
+
+      if (nextState !== 'active') {
+        return;
+      }
+
+      connectSocket(true);
+      refreshConversationState().catch((error) => {
+        setStatus(error instanceof Error ? error.message : 'Failed to refresh conversation state.');
+      });
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [connectSocket, refreshConversationState]);
+
+  React.useEffect(() => {
+    const intervalId = setInterval(() => {
+      if (appStateRef.current !== 'active') {
+        return;
+      }
+
+      loadWorkspaces({ refresh: true }).catch(() => {
+        // Keep passive sync checks quiet; interactive actions surface errors explicitly.
+      });
+    }, WORKSPACE_SYNC_REFRESH_INTERVAL_MS);
+
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [loadWorkspaces]);
 
   React.useEffect(() => {
     if (!timelineRenderItems.length && !activeConversationIsRunning) {
@@ -2342,103 +2782,100 @@ export default function App() {
     };
   }, [activeConversationIsRunning]);
 
-  const validateWorkspacePath = React.useCallback(async (directoryPath: string) => {
-    const trimmedPath = directoryPath.trim();
-    if (!trimmedPath) {
-      setWorkspaceValidation({
-        state: 'idle',
-        message: 'Choose a quick pick or enter an absolute directory path.',
-        resolvedPath: null,
-        isGitRepo: false
-      });
-      return null;
-    }
+  const resetComposerPosition = React.useCallback((velocity = 0) => {
+    Animated.spring(composerDragOffset, {
+      toValue: 0,
+      velocity,
+      tension: 150,
+      friction: 22,
+      useNativeDriver: true
+    }).start();
+  }, [composerDragOffset]);
 
-    setWorkspaceValidation({
-      state: 'checking',
-      message: 'Checking directory on this Mac...',
-      resolvedPath: null,
-      isGitRepo: false
-    });
+  const dismissComposer = React.useCallback(() => {
+    composerInputRef.current?.blur();
+    setComposerFocused(false);
+    setKeyboardVisible(false);
+    Keyboard.dismiss();
+    resetComposerPosition();
+  }, [resetComposerPosition]);
 
-    try {
-      const response = await fetch(`${API_URL}/api/workspaces/validate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          directoryPath: trimmedPath
-        })
-      });
-      const payload = await response.json();
+  const setSidebarOpen = React.useCallback((nextVisible: boolean) => {
+    sidebarAnimation.stopAnimation();
+    setSidebarVisible(nextVisible);
+    Animated.timing(sidebarAnimation, {
+      toValue: nextVisible ? 1 : 0,
+      duration: nextVisible ? 220 : 180,
+      easing: nextVisible ? Easing.out(Easing.cubic) : Easing.inOut(Easing.cubic),
+      useNativeDriver: true
+    }).start();
+  }, [sidebarAnimation]);
 
-      if (!response.ok || !payload.valid) {
-        setWorkspaceValidation({
-          state: 'invalid',
-          message: payload.message || 'Directory is not available.',
-          resolvedPath: payload.resolvedPath || null,
-          isGitRepo: false
-        });
-        return null;
-      }
+  const closeSidebar = React.useCallback(() => {
+    setSidebarOpen(false);
+  }, [setSidebarOpen]);
 
-      const nextValidation: WorkspaceValidation = {
-        state: 'valid',
-        message: payload.message || 'Directory is ready.',
-        resolvedPath: payload.resolvedPath,
-        isGitRepo: Boolean(payload.isGitRepo)
-      };
-      setWorkspaceValidation(nextValidation);
-      return nextValidation;
-    } catch (error) {
-      setWorkspaceValidation({
-        state: 'invalid',
-        message: error instanceof Error ? error.message : 'Failed to validate directory.',
-        resolvedPath: null,
-        isGitRepo: false
-      });
-      return null;
-    }
-  }, []);
+  const toggleSidebar = React.useCallback(() => {
+    setSidebarOpen(!sidebarVisible);
+  }, [setSidebarOpen, sidebarVisible]);
 
-  const openNewChatSheet = React.useCallback(() => {
-    setViewMode('chat');
-    setSelectedWorkspaceId('general');
-    setWorkspaceDraft('');
-    setWorkspaceValidation({
-      state: 'idle',
-      message: 'Choose a quick pick or enter an absolute directory path.',
-      resolvedPath: null,
-      isGitRepo: false
-    });
-    setNewChatSheetVisible(true);
-  }, []);
-
-  const applyWorkspaceQuickPick = React.useCallback((workspace: WorkspaceQuickPick) => {
-    setSelectedWorkspaceId(workspace.id);
-    setWorkspaceDraft(workspace.path || '');
-    if (!workspace.path) {
-      setWorkspaceValidation({
-        state: 'valid',
-        message: 'This thread will stay unbound so you can just chat.',
-        resolvedPath: null,
-        isGitRepo: false
-      });
+  const handleComposerTouchStart = React.useCallback((event: { nativeEvent: { pageY: number } }) => {
+    if (!composerActive) {
+      composerTouchStartYRef.current = null;
       return;
     }
 
-    validateWorkspacePath(workspace.path).catch((error) => {
-      setWorkspaceValidation({
-        state: 'invalid',
-        message: error instanceof Error ? error.message : 'Failed to validate directory.',
-        resolvedPath: null,
-        isGitRepo: false
-      });
-    });
-  }, [validateWorkspacePath]);
+    composerTouchStartYRef.current = event.nativeEvent.pageY;
+  }, [composerActive]);
 
-  const createConversation = React.useCallback(async (workspacePath?: string | null) => {
+  const handleComposerTouchMove = React.useCallback((event: { nativeEvent: { pageY: number } }) => {
+    const startY = composerTouchStartYRef.current;
+    if (!composerActive || startY === null) {
+      return;
+    }
+
+    const deltaY = event.nativeEvent.pageY - startY;
+    composerDragOffset.setValue(Math.min(Math.max(deltaY, 0), 72));
+
+    if (deltaY > 16) {
+      composerTouchStartYRef.current = null;
+      dismissComposer();
+    }
+  }, [composerActive, composerDragOffset, dismissComposer]);
+
+  const handleComposerTouchEnd = React.useCallback((event: { nativeEvent: { pageY: number } }) => {
+    const startY = composerTouchStartYRef.current;
+    composerTouchStartYRef.current = null;
+
+    if (!composerActive || startY === null) {
+      return;
+    }
+
+    if (event.nativeEvent.pageY - startY > 10) {
+      dismissComposer();
+      return;
+    }
+
+    resetComposerPosition();
+  }, [composerActive, dismissComposer, resetComposerPosition]);
+
+  const handleComposerTouchCancel = React.useCallback(() => {
+    composerTouchStartYRef.current = null;
+    resetComposerPosition();
+  }, [resetComposerPosition]);
+
+  const openNewChatSheet = React.useCallback(() => {
+    setViewMode('chat');
+    closeSidebar();
+    setSelectedWorkspaceId('general');
+    setWorkspaceLoadError(null);
+    loadWorkspaces({ refresh: true }).catch((error) => {
+      setStatus(error instanceof Error ? error.message : 'Failed to load workspaces.');
+    });
+    setNewChatSheetVisible(true);
+  }, [closeSidebar, loadWorkspaces]);
+
+  const createConversation = React.useCallback(async (workspaceId?: string | null) => {
     const response = await fetch(`${API_URL}/api/conversations`, {
       method: 'POST',
       headers: {
@@ -2446,12 +2883,12 @@ export default function App() {
       },
       body: JSON.stringify({
         title: 'New Codex Chat',
-        mode: workspacePath ? 'workspace' : 'chat',
-        workspacePath: workspacePath || null
+        mode: workspaceId ? 'workspace' : 'chat',
+        workspaceId: workspaceId || null
       })
     });
 
-    const payload = await response.json();
+    const payload = await readResponsePayload<{ conversation?: Conversation; error?: string }>(response);
     if (!response.ok) {
       throw new Error(payload.error || 'Failed to create conversation.');
     }
@@ -2464,55 +2901,88 @@ export default function App() {
     setDraft('');
     setSelectedImages([]);
     setViewMode('chat');
-    setSidebarVisible(false);
+    closeSidebar();
     setNewChatSheetVisible(false);
-  }, []);
+  }, [closeSidebar]);
 
   const startNewChat = React.useCallback(async () => {
     if (creatingConversation) {
       return;
     }
 
-    let nextWorkspacePath: string | null = null;
-
-    if (selectedWorkspaceId !== 'general') {
-      const validation =
-        workspaceValidation.state === 'valid' && workspaceValidation.resolvedPath
-          ? workspaceValidation
-          : await validateWorkspacePath(workspaceDraft);
-
-      if (!validation || validation.state !== 'valid') {
-        return;
-      }
-
-      nextWorkspacePath = validation.resolvedPath;
-    }
+    const nextWorkspaceId = selectedWorkspaceId === 'general' ? null : selectedWorkspaceId;
 
     try {
       setCreatingConversation(true);
-      await createConversation(nextWorkspacePath);
+      await createConversation(nextWorkspaceId);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Failed to create conversation.');
     } finally {
       setCreatingConversation(false);
     }
-  }, [createConversation, creatingConversation, selectedWorkspaceId, validateWorkspacePath, workspaceDraft, workspaceValidation]);
+  }, [createConversation, creatingConversation, selectedWorkspaceId]);
 
   const selectConversation = React.useCallback((conversationId: string) => {
     setActiveConversationId(conversationId);
     setViewMode('chat');
-    setSidebarVisible(false);
+    closeSidebar();
     setDraft('');
     setSelectedImages([]);
     loadConversationDetail(conversationId).catch((error) => {
       setStatus(error instanceof Error ? error.message : 'Failed to load conversation.');
     });
-  }, [loadConversationDetail]);
+  }, [closeSidebar, loadConversationDetail]);
 
   const openSettings = React.useCallback(() => {
     setViewMode('settings');
-    setSidebarVisible(false);
-  }, []);
+    closeSidebar();
+  }, [closeSidebar]);
+
+  const syncActiveWorkspace = React.useCallback(async () => {
+    if (!activeWorkspace) {
+      return;
+    }
+
+    if (activeConversationIsRunning) {
+      setStatus('Stop the active run before syncing this workspace.');
+      return;
+    }
+
+    try {
+      setSyncingWorkspaceId(activeWorkspace.id);
+      setStatus(`Syncing ${activeWorkspace.name} with main...`);
+      const response = await fetch(`${API_URL}/api/workspaces/${activeWorkspace.id}/sync`, {
+        method: 'POST'
+      });
+      const payload = await readResponsePayload<{ workspace?: Workspace; error?: string }>(response);
+      if (!response.ok || !payload.workspace) {
+        throw new Error(payload.error || 'Failed to sync workspace.');
+      }
+
+      applyWorkspaceUpdate(payload.workspace);
+      await Promise.allSettled([
+        loadWorkspaces({ refresh: true }),
+        loadConversations(),
+        activeConversationId ? loadConversationDetail(activeConversationId) : Promise.resolve()
+      ]);
+      setStatus(`${payload.workspace.name} is back in sync with main.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Failed to sync workspace.');
+      loadWorkspaces({ refresh: true }).catch(() => {
+        // Best-effort refresh after sync failure.
+      });
+    } finally {
+      setSyncingWorkspaceId(null);
+    }
+  }, [
+    activeConversationId,
+    activeConversationIsRunning,
+    activeWorkspace,
+    applyWorkspaceUpdate,
+    loadConversationDetail,
+    loadConversations,
+    loadWorkspaces
+  ]);
 
   const dispatchRun = React.useCallback(async (input: {
     conversationId: string;
@@ -2546,7 +3016,7 @@ export default function App() {
             body: form
           });
 
-          const payload = await response.json();
+          const payload = await readResponsePayload<{ attachment?: UploadedImageAttachment; error?: string }>(response);
           if (!response.ok) {
             throw new Error(payload.error || 'Failed to upload image.');
           }
@@ -2600,7 +3070,7 @@ export default function App() {
       quality: 1
     });
 
-    if (result.canceled || !result.assets.length) {
+    if (result.canceled || !result.assets?.length) {
       return;
     }
 
@@ -2629,9 +3099,34 @@ export default function App() {
   }, []);
 
   const sendMessage = React.useCallback(async () => {
-    if ((!draft.trim() && selectedImages.length === 0) || !activeConversationId || !socketRef.current) {
+    if ((!draft.trim() && selectedImages.length === 0) || !activeConversationId) {
       return;
     }
+
+    if (activeRunRef.current?.conversationId === activeConversationId) {
+      const nextQueuedTurn = {
+        prompt: draft.trim(),
+        selectedImages: [...selectedImages]
+      };
+      setStatus('Queueing next turn...');
+      setQueuedTurns((current) => {
+        const next = {
+          ...current,
+          [activeConversationId]: nextQueuedTurn
+        };
+        queuedTurnsRef.current = next;
+        return next;
+      });
+      setDraft('');
+      setSelectedImages([]);
+      setStatus('Next turn queued.');
+      return;
+    }
+
+    if (!socketRef.current) {
+      return;
+    }
+
     await dispatchRun({
       conversationId: activeConversationId,
       prompt: draft,
@@ -2641,9 +3136,27 @@ export default function App() {
     setSelectedImages([]);
   }, [activeConversationId, dispatchRun, draft, selectedImages]);
 
+  const clearQueuedTurn = React.useCallback((conversationId: string) => {
+    setQueuedTurns((current) => {
+      if (!current[conversationId]) {
+        return current;
+      }
+
+      const next = { ...current };
+      delete next[conversationId];
+      queuedTurnsRef.current = next;
+      return next;
+    });
+  }, []);
+
   const cancelActiveRun = React.useCallback(() => {
     if (!activeRun || activeRun.conversationId !== activeConversationId || !socketRef.current) {
       return;
+    }
+
+    const hadQueuedTurn = Boolean(activeConversationId && queuedTurnsRef.current[activeConversationId]);
+    if (activeConversationId) {
+      clearQueuedTurn(activeConversationId);
     }
 
     socketRef.current.send(
@@ -2653,115 +3166,60 @@ export default function App() {
         runId: activeRun.runId
       })
     );
-    setStatus('Stopping Codex turn...');
-  }, [activeConversationId, activeRun]);
+    setStatus(hadQueuedTurn ? 'Stopping Codex turn and clearing queued next turn...' : 'Stopping Codex turn...');
+  }, [activeConversationId, activeRun, clearQueuedTurn]);
 
-  const clearQueuedSteer = React.useCallback((conversationId: string) => {
-    setQueuedSteers((current) => {
-      if (!current[conversationId]) {
-        return current;
-      }
-
-      const next = { ...current };
-      delete next[conversationId];
-      queuedSteersRef.current = next;
-      return next;
-    });
-  }, []);
-
-  const queueSteer = React.useCallback(() => {
-    if (!activeConversationId || !steerDraft.trim()) {
+  const dispatchQueuedTurn = React.useCallback(async (conversationId: string, queuedTurn: QueuedTurn) => {
+    const prompt = queuedTurn.prompt.trim();
+    if (!prompt && queuedTurn.selectedImages.length === 0) {
       return;
     }
 
-    const prompt = steerDraft.trim();
-    setStatus('Queuing steer...');
-    const runStillActive = activeRunRef.current?.conversationId === activeConversationId;
-    if (runStillActive) {
-      const nextQueuedSteers = {
-        ...queuedSteersRef.current,
-        [activeConversationId]: prompt
-      };
-      queuedSteersRef.current = nextQueuedSteers;
-      setQueuedSteers((current) => ({
-        ...current,
-        [activeConversationId]: prompt
-      }));
-      setStatus('Steer queued for the next turn.');
-    } else {
-      dispatchQueuedSteerRef.current(activeConversationId, prompt);
-    }
-    setSteerDraft('');
-    setSteerModalVisible(false);
-  }, [activeConversationId, steerDraft]);
-
-  const dispatchQueuedSteer = React.useCallback(async (conversationId: string, prompt: string) => {
-    if (!prompt.trim()) {
+    if (queuedTurnDispatchingRef.current[conversationId]) {
       return;
     }
 
-    if (queuedSteerDispatchingRef.current[conversationId] === prompt) {
-      return;
-    }
-
-    queuedSteerDispatchingRef.current[conversationId] = prompt;
+    queuedTurnDispatchingRef.current[conversationId] = true;
     await dispatchRun({
       conversationId,
       prompt,
-      selectedImages: []
+      selectedImages: queuedTurn.selectedImages
     });
-    clearQueuedSteer(conversationId);
-    delete queuedSteerDispatchingRef.current[conversationId];
+    clearQueuedTurn(conversationId);
+    delete queuedTurnDispatchingRef.current[conversationId];
     if (conversationId === activeConversationIdRef.current) {
-      setStatus('Queued steer submitted.');
+      setStatus('Queued next turn submitted.');
     }
-  }, [clearQueuedSteer, dispatchRun]);
+  }, [clearQueuedTurn, dispatchRun]);
 
   React.useEffect(() => {
-    dispatchQueuedSteerRef.current = (conversationId: string, prompt: string) => {
-      dispatchQueuedSteer(conversationId, prompt).catch((error) => {
-        delete queuedSteerDispatchingRef.current[conversationId];
-        setStatus(error instanceof Error ? error.message : 'Failed to submit queued steer.');
+    dispatchQueuedTurnRef.current = (conversationId: string, queuedTurn: QueuedTurn) => {
+      dispatchQueuedTurn(conversationId, queuedTurn).catch((error) => {
+        delete queuedTurnDispatchingRef.current[conversationId];
+        setStatus(error instanceof Error ? error.message : 'Failed to submit queued next turn.');
       });
     };
-  }, [dispatchQueuedSteer]);
+  }, [dispatchQueuedTurn]);
 
   React.useEffect(() => {
     if (activeRun) {
       return;
     }
 
-    const nextQueuedSteer = Object.entries(queuedSteers).find(([, prompt]) => prompt.trim().length > 0);
-    if (!nextQueuedSteer) {
+    const nextQueuedTurn = Object.entries(queuedTurns).find(([, queuedTurn]) =>
+      queuedTurn.prompt.trim().length > 0 || queuedTurn.selectedImages.length > 0
+    );
+    if (!nextQueuedTurn) {
       return;
     }
 
-    const [conversationId, prompt] = nextQueuedSteer;
-    if (queuedSteerDispatchingRef.current[conversationId] === prompt) {
+    const [conversationId, queuedTurn] = nextQueuedTurn;
+    if (queuedTurnDispatchingRef.current[conversationId]) {
       return;
     }
 
-    dispatchQueuedSteerRef.current(conversationId, prompt);
-  }, [activeRun, queuedSteers]);
-
-  React.useEffect(() => {
-    const previousRun = previousActiveRunRef.current;
-    previousActiveRunRef.current = activeRun;
-
-    if (!previousRun || activeRun || !steerModalVisible || !activeConversationId) {
-      return;
-    }
-
-    const prompt = steerDraft.trim();
-    if (!prompt) {
-      return;
-    }
-
-    setSteerDraft('');
-    setSteerModalVisible(false);
-    setStatus('Submitting steer...');
-    dispatchQueuedSteerRef.current(activeConversationId, prompt);
-  }, [activeConversationId, activeRun, steerDraft, steerModalVisible]);
+    dispatchQueuedTurnRef.current(conversationId, queuedTurn);
+  }, [activeRun, queuedTurns]);
 
   const closeContextMenu = React.useCallback(() => {
     Animated.timing(contextAnimation, {
@@ -2960,6 +3418,42 @@ export default function App() {
     [contextAnimation]
   );
 
+  const sidebarOverlayAnimatedStyle = React.useMemo(
+    () => ({
+      opacity: sidebarAnimation
+    }),
+    [sidebarAnimation]
+  );
+
+  const sidebarPanelAnimatedStyle = React.useMemo(
+    () => ({
+      opacity: sidebarAnimation.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0.98, 1]
+      }),
+      transform: [
+        {
+          translateX: sidebarAnimation.interpolate({
+            inputRange: [0, 1],
+            outputRange: [-sidebarWidth - 28, 0]
+          })
+        }
+      ]
+    }),
+    [sidebarAnimation, sidebarWidth]
+  );
+
+  const composerShellAnimatedStyle = React.useMemo(
+    () => ({
+      transform: [
+        {
+          translateY: composerDragOffset
+        }
+      ]
+    }),
+    [composerDragOffset]
+  );
+
   const landingPosterAnimatedStyle = React.useMemo(
     () => ({
       opacity: landingEntrance,
@@ -3066,6 +3560,7 @@ export default function App() {
                     ]}
                   >
                     <Pressable
+                      onPress={dismissComposer}
                       delayLongPress={220}
                       onLongPress={() => {
                         openContextMenu({
@@ -3149,31 +3644,56 @@ export default function App() {
         </ScrollView>
       </View>
 
-      <View style={styles.composerDock}>
-        <View style={styles.composerShell}>
-          {queuedSteer ? (
-            <View style={styles.queuedSteerCard}>
+      <View testID={composerDockTestId} style={styles.composerDock}>
+        <Animated.View
+          testID="composer-shell"
+          style={[styles.composerShell, composerShellAnimatedStyle]}
+        >
+          <View
+            testID="composer-swipe-surface"
+            style={styles.composerHandleTouchArea}
+            onTouchStart={handleComposerTouchStart}
+            onTouchMove={handleComposerTouchMove}
+            onTouchEnd={handleComposerTouchEnd}
+            onTouchCancel={handleComposerTouchCancel}
+          >
+            <View style={styles.composerHandle} />
+          </View>
+          {queuedTurn ? (
+            <View testID="queued-next-turn-card" style={styles.queuedSteerCard}>
               <View style={styles.queuedSteerHeader}>
-                <Text style={styles.queuedSteerLabel}>Queued steer</Text>
-                <Pressable onPress={() => activeConversationId && clearQueuedSteer(activeConversationId)}>
+                <Text style={styles.queuedSteerLabel}>Queued next turn</Text>
+                <Pressable
+                  testID="clear-queued-next-turn-button"
+                  onPress={() => activeConversationId && clearQueuedTurn(activeConversationId)}
+                >
                   <Text style={styles.queuedSteerClear}>Clear</Text>
                 </Pressable>
               </View>
               <Text numberOfLines={3} style={styles.queuedSteerText}>
-                {queuedSteer}
+                {queuedTurnPreview}
               </Text>
+              {queuedTurn.selectedImages.length ? (
+                <Text style={styles.queuedSteerClear}>
+                  {queuedTurn.selectedImages.length} image{queuedTurn.selectedImages.length === 1 ? '' : 's'} attached
+                </Text>
+              ) : null}
             </View>
           ) : null}
           {selectedImages.length ? (
-            <View style={styles.attachmentTray}>
-              {selectedImages.map((image) => (
-                <View key={image.id} style={styles.attachmentChip}>
+            <View testID="selected-images-tray" style={styles.attachmentTray}>
+              {selectedImages.map((image, index) => (
+                <View key={image.id} testID={`selected-image-chip-${index}`} style={styles.attachmentChip}>
                   <View style={styles.attachmentChipDot} />
-                  <Text numberOfLines={1} style={styles.attachmentChipText}>
+                  <Text
+                    testID={`selected-image-label-${index}`}
+                    numberOfLines={1}
+                    style={styles.attachmentChipText}
+                  >
                     {image.fileName}
                   </Text>
                   <Pressable
-                    testID={`remove-image-${image.id}`}
+                    testID={`remove-image-${index}`}
                     style={styles.attachmentChipRemove}
                     onPress={() => removeSelectedImage(image.id)}
                   >
@@ -3184,12 +3704,19 @@ export default function App() {
             </View>
           ) : null}
           <TextInput
+            ref={composerInputRef}
             testID="composer-input"
             value={draft}
             onChangeText={setDraft}
+            onFocus={() => setComposerFocused(true)}
+            onBlur={() => setComposerFocused(false)}
+            onTouchStart={handleComposerTouchStart}
+            onTouchMove={handleComposerTouchMove}
+            onTouchEnd={handleComposerTouchEnd}
+            onTouchCancel={handleComposerTouchCancel}
             multiline
             scrollEnabled
-            placeholder="Ask for follow-up changes"
+            placeholder={activeConversationIsRunning ? 'Queue the next turn while Codex is working' : 'Ask for follow-up changes'}
             placeholderTextColor={theme.textSubtle}
             style={styles.input}
           />
@@ -3206,23 +3733,11 @@ export default function App() {
               <Text style={styles.composerUtilityText}>+</Text>
             </TouchableOpacity>
             <View style={styles.composerMetaRow}>
-              {activeConversationIsRunning ? (
-                <TouchableOpacity
-                  testID="open-steer-button"
-                  style={[styles.steerMetaButton, queuedSteer ? styles.steerMetaButtonActive : null]}
-                  onPress={() => {
-                    setSteerDraft(queuedSteer || '');
-                    setSteerModalVisible(true);
-                  }}
-                >
-                  <Text style={styles.steerMetaButtonText}>{queuedSteer ? 'Steer queued' : 'Steer'}</Text>
-                </TouchableOpacity>
-              ) : null}
               <Text style={styles.composerMetaPill}>{runtime?.model || 'Runtime'}</Text>
               <Text style={styles.composerMetaPill}>{runtime?.reasoningEffort || '...'}</Text>
               <Text style={styles.composerMetaPill}>{formatSandboxModeLabel(runtime?.sandboxMode)}</Text>
             </View>
-            {activeConversationIsRunning ? (
+            {activeConversationIsRunning && !composerHasContent ? (
               <TouchableOpacity testID="stop-button" style={styles.sendButton} onPress={cancelActiveRun}>
                 <StopIcon color={theme.accentText} />
               </TouchableOpacity>
@@ -3240,7 +3755,7 @@ export default function App() {
               </TouchableOpacity>
             )}
           </View>
-        </View>
+        </Animated.View>
       </View>
 
       {copyToastVisible ? (
@@ -3288,48 +3803,6 @@ export default function App() {
             ) : null}
           </View>
         </Pressable>
-      </Modal>
-
-      <Modal visible={steerModalVisible} transparent animationType="fade" onRequestClose={() => setSteerModalVisible(false)}>
-        <View style={styles.steerOverlay}>
-          <Pressable
-            style={StyleSheet.absoluteFill}
-            onPress={() => setSteerModalVisible(false)}
-          />
-          <View style={styles.steerSheet}>
-            <Text style={styles.steerSheetTitle}>Steer</Text>
-            <Text style={styles.steerSheetCopy}>
-              This steer will be queued and submitted as the next turn after the current run finishes.
-            </Text>
-              <TextInput
-                testID="steer-input"
-                value={steerDraft}
-                onChangeText={setSteerDraft}
-                placeholder="Tell Codex what to do differently next"
-                placeholderTextColor={theme.textSubtle}
-                autoFocus
-                multiline
-                style={styles.steerInput}
-              />
-            <View style={styles.steerSheetActions}>
-              <TouchableOpacity
-                style={styles.steerSheetButton}
-                onPress={() => setSteerModalVisible(false)}
-              >
-                <Text style={styles.steerSheetButtonText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                testID="queue-steer-button"
-                style={[styles.steerSheetButton, styles.steerSheetButtonPrimary]}
-                onPressIn={queueSteer}
-              >
-                <Text style={[styles.steerSheetButtonText, styles.steerSheetButtonTextPrimary]}>
-                  Queue steer
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
       </Modal>
     </>
   );
@@ -3411,18 +3884,20 @@ export default function App() {
         keyboardVerticalOffset={8}
       >
         <View style={[styles.shell, { backgroundColor: shellBackground }]}>
-          {sidebarVisible ? (
-            <Pressable
-              testID="sidebar-overlay"
-              style={styles.overlayTouchArea}
-              onPress={() => setSidebarVisible(false)}
-            >
-              <View style={styles.overlay} />
-            </Pressable>
-          ) : null}
+          <Pressable
+            testID="sidebar-overlay"
+            pointerEvents={sidebarVisible ? 'auto' : 'none'}
+            style={styles.overlayTouchArea}
+            onPress={closeSidebar}
+          >
+            <Animated.View style={[styles.overlay, sidebarOverlayAnimatedStyle]} />
+          </Pressable>
 
-          {sidebarVisible ? (
-            <View testID="sidebar-panel" style={styles.sidebar}>
+          <Animated.View
+            testID={sidebarPanelTestId}
+            pointerEvents={sidebarVisible ? 'auto' : 'none'}
+            style={[styles.sidebar, sidebarPanelAnimatedStyle]}
+          >
             <View style={styles.sidebarHeader}>
               <View>
                 <Text style={styles.sidebarEyebrow}>Dev Agent</Text>
@@ -3431,7 +3906,7 @@ export default function App() {
               <TouchableOpacity
                 testID="close-sidebar-button"
                 style={styles.iconButton}
-                onPress={() => setSidebarVisible(false)}
+                onPress={closeSidebar}
               >
                 <Text style={styles.iconButtonText}>×</Text>
               </TouchableOpacity>
@@ -3455,7 +3930,7 @@ export default function App() {
                       {conversation.title}
                     </Text>
                     <Text style={styles.threadMeta}>
-                      {formatModeLabel(conversation.mode)} · {formatWorkspaceLabel(conversation.workspacePath)}
+                      {formatModeLabel(conversation.mode)} · {formatWorkspaceLabel(conversation)}
                     </Text>
                   </TouchableOpacity>
                 );
@@ -3476,8 +3951,7 @@ export default function App() {
                 )}
               </ScrollView>
             </View>
-            </View>
-          ) : null}
+          </Animated.View>
 
           <View style={styles.mainPane}>
             <View style={styles.topBar}>
@@ -3485,7 +3959,7 @@ export default function App() {
                 <TouchableOpacity
                   testID="sidebar-toggle-button"
                   style={styles.iconButton}
-                  onPress={() => setSidebarVisible(true)}
+                  onPress={toggleSidebar}
                 >
                   <Text style={styles.iconButtonText}>≡</Text>
                 </TouchableOpacity>
@@ -3497,17 +3971,33 @@ export default function App() {
                       : activeConversation?.title || 'New thread'}
                   </Text>
                   <Text testID={statusTestId} style={styles.topBarStatus} numberOfLines={1}>
-                    {viewMode === 'settings' ? `Theme: ${themeMode}` : status}
+                    {topBarStatus}
                   </Text>
                   {viewMode === 'settings' ? null : (
-                    <Text style={styles.topBarWorkspace} numberOfLines={1}>
-                      {formatWorkspaceLabel(activeConversation?.workspacePath)}
+                    <Text testID="active-workspace-label" style={styles.topBarWorkspace} numberOfLines={1}>
+                      {activeWorkspaceMetaLabel}
                     </Text>
                   )}
                 </View>
               </View>
 
               <View style={styles.topBarActions}>
+                {viewMode === 'settings' || !activeWorkspaceNeedsSync ? null : (
+                  <TouchableOpacity
+                    testID="sync-workspace-button"
+                    style={styles.topBarPillAction}
+                    onPress={() => {
+                      syncActiveWorkspace().catch((error) => {
+                        setStatus(error instanceof Error ? error.message : 'Failed to sync workspace.');
+                      });
+                    }}
+                    disabled={syncingWorkspaceId === activeWorkspace?.id}
+                  >
+                    <Text style={styles.topBarActionText}>
+                      {syncingWorkspaceId === activeWorkspace?.id ? 'Syncing' : 'Sync'}
+                    </Text>
+                  </TouchableOpacity>
+                )}
                 <TouchableOpacity testID="open-settings-button" style={styles.topBarAction} onPress={openSettings}>
                   <GearIcon color={theme.text} />
                 </TouchableOpacity>
@@ -3529,24 +4019,36 @@ export default function App() {
               <View style={styles.newChatSheet}>
                 <Text style={styles.newChatTitle}>New chat</Text>
                 <Text style={styles.newChatCopy}>
-                  Pick a repo if you want Codex to work locally on this Mac, or leave the thread unbound
-                  for a general chat.
+                  Pick a workspace instance if you want Codex to work locally on this Mac, or leave the
+                  thread unbound for a general chat.
                 </Text>
 
                 <View style={styles.workspaceSection}>
                   <Text style={styles.workspaceSectionTitle}>Quick picks</Text>
                   <View style={styles.workspaceQuickPickGrid}>
-                    {WORKSPACE_QUICK_PICKS.map((workspace) => {
+                    <TouchableOpacity
+                      testID="workspace-option-general"
+                      style={[styles.workspaceQuickPick, selectedWorkspaceId === 'general' ? styles.workspaceQuickPickActive : null]}
+                      onPress={() => setSelectedWorkspaceId('general')}
+                    >
+                      <Text style={styles.workspaceQuickPickLabel}>General chat</Text>
+                      <Text style={styles.workspaceQuickPickDescription}>
+                        No repo binding. Best for questions and planning.
+                      </Text>
+                    </TouchableOpacity>
+                    {workspaces.map((workspace) => {
                       const selected = selectedWorkspaceId === workspace.id;
                       return (
                         <TouchableOpacity
                           key={workspace.id}
-                          testID={`workspace-pick-${workspace.id}`}
+                          testID={`workspace-option-${workspace.slug}`}
                           style={[styles.workspaceQuickPick, selected ? styles.workspaceQuickPickActive : null]}
-                          onPress={() => applyWorkspaceQuickPick(workspace)}
+                          onPress={() => setSelectedWorkspaceId(workspace.id)}
                         >
-                          <Text style={styles.workspaceQuickPickLabel}>{workspace.label}</Text>
-                          <Text style={styles.workspaceQuickPickDescription}>{workspace.description}</Text>
+                          <Text style={styles.workspaceQuickPickLabel}>{workspace.name}</Text>
+                          <Text style={styles.workspaceQuickPickDescription}>
+                            {`${formatWorkspaceSubtitle(workspace)}\n${formatWorkspaceSyncSummary(workspace)}`}
+                          </Text>
                         </TouchableOpacity>
                       );
                     })}
@@ -3554,61 +4056,23 @@ export default function App() {
                 </View>
 
                 <View style={styles.workspaceSection}>
-                  <Text style={styles.workspaceSectionTitle}>Custom directory</Text>
-                  <TextInput
-                    testID="workspace-path-input"
-                    value={workspaceDraft}
-                    onChangeText={(value) => {
-                      setSelectedWorkspaceId('custom');
-                      setWorkspaceDraft(value);
-                      setWorkspaceValidation({
-                        state: 'idle',
-                        message: value.trim()
-                          ? 'Validate this path before starting the chat.'
-                          : 'Choose a quick pick or enter an absolute directory path.',
-                        resolvedPath: null,
-                        isGitRepo: false
-                      });
-                    }}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    placeholder="/Users/team7agent/stick2it/stick2it"
-                    placeholderTextColor={theme.textSubtle}
-                    style={styles.workspacePathInput}
-                  />
-                  <View style={styles.workspaceValidationRow}>
-                    <Text
-                      style={[
-                        styles.workspaceValidationCopy,
-                        workspaceValidation.state === 'invalid'
-                          ? styles.workspaceValidationCopyInvalid
-                          : null,
-                        workspaceValidation.state === 'valid'
-                          ? styles.workspaceValidationCopyValid
-                          : null
-                      ]}
-                    >
-                      {workspaceValidation.message}
-                    </Text>
-                    <Pressable
-                      testID="validate-workspace-button"
-                      style={styles.workspaceValidationButton}
-                      onPress={() => {
-                        validateWorkspacePath(workspaceDraft).catch((error) => {
-                          setWorkspaceValidation({
-                            state: 'invalid',
-                            message: error instanceof Error ? error.message : 'Failed to validate directory.',
-                            resolvedPath: null,
-                            isGitRepo: false
-                          });
-                        });
-                      }}
-                    >
-                      <Text style={styles.workspaceValidationButtonText}>
-                        {workspaceValidation.state === 'checking' ? 'Checking…' : 'Validate'}
-                      </Text>
-                    </Pressable>
-                  </View>
+                  <Text style={styles.workspaceSectionTitle}>Selection</Text>
+                  <Text
+                    testID="workspace-selection-message"
+                    style={[
+                      styles.workspaceValidationCopy,
+                      workspaceLoadError ? styles.workspaceValidationCopyInvalid : null,
+                      !workspaceLoadError ? styles.workspaceValidationCopyValid : null
+                    ]}
+                  >
+                    {workspaceLoadError
+                      ? workspaceLoadError
+                      : loadingWorkspaces
+                        ? 'Loading workspace instances from Dev Agent...'
+                        : selectedWorkspace
+                          ? `${selectedWorkspace.localPath}${selectedWorkspace.supabaseProjectRef ? ` • ${selectedWorkspace.supabaseProjectRef}` : ''}\n${formatWorkspaceSyncSummary(selectedWorkspace)}`
+                          : 'This thread will stay unbound so you can just chat.'}
+                  </Text>
                 </View>
 
                 <View style={styles.newChatActions}>

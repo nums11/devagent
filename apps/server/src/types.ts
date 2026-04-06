@@ -1,5 +1,37 @@
 export type ConversationMode = 'chat' | 'workspace' | 'harness';
 
+export type RepoProfileRecord = {
+  id: string;
+  slug: string;
+  name: string;
+  baseLocalPath: string;
+  defaultBranch: string;
+};
+
+export type WorkspaceState = 'active' | 'archived';
+export type WorkspaceSyncStatus = 'fresh' | 'stale' | 'syncing' | 'conflicted';
+
+export type WorkspaceRecord = {
+  id: string;
+  slug: string;
+  name: string;
+  localPath: string;
+  branchName: string | null;
+  simulatorName: string | null;
+  simulatorUdid: string | null;
+  metroPort: number | null;
+  envLabel: string | null;
+  supabaseProjectRef: string | null;
+  state: WorkspaceState;
+  syncStatus: WorkspaceSyncStatus;
+  behindCount: number;
+  aheadCount: number;
+  lastSyncedMainSha: string | null;
+  lastSyncCheckedAt: string | null;
+  sortOrder: number;
+  repoProfile: RepoProfileRecord | null;
+};
+
 export type MessageAttachment = {
   id: string;
   fileName: string;
@@ -14,7 +46,18 @@ export type ConversationRecord = {
   id: string;
   title: string;
   mode: ConversationMode;
+  workspaceId: string | null;
   workspacePath: string | null;
+  workspaceName: string | null;
+  workspaceSlug: string | null;
+  workspaceBranchName: string | null;
+  workspaceSimulatorName: string | null;
+  workspaceSimulatorUdid: string | null;
+  workspaceMetroPort: number | null;
+  workspaceEnvLabel: string | null;
+  workspaceSyncStatus: WorkspaceSyncStatus | null;
+  repoProfileSlug: string | null;
+  repoProfileName: string | null;
   codexThreadId: string | null;
   createdAt: string;
   updatedAt: string;

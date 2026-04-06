@@ -8,9 +8,20 @@ import cors from 'cors';
 import multer from 'multer';
 import { WebSocketServer, WebSocket } from 'ws';
 import { config } from './config.js';
-import { addMessage, createConversation, getConversation, listActivities, listConversations, listMessages, listRuns } from './db.js';
+import {
+  addMessage,
+  createConversation,
+  getConversation,
+  getWorkspace,
+  listActivities,
+  listConversations,
+  listMessages,
+  listRuns,
+  listWorkspaces
+} from './db.js';
 import { createConversationSchema, publishProofVideoSchema, validateWorkspaceSchema, websocketClientMessageSchema } from './schemas.js';
 import { cancelRun, runConversationTurn } from './codexBridge.js';
+import { refreshAllWorkspaceSyncStatuses, syncWorkspaceFromMain } from './workspaceSync.js';
 import { getSupabaseAdmin } from './supabaseAdmin.js';
 import type { RuntimeConfig, SocketServerEvent } from './types.js';
 
@@ -89,7 +100,31 @@ app.get('/api/conversations', (_req, res) => {
     });
 });
 
-app.post('/api/conversations', (req, res) => {
+app.get('/api/workspaces', (_req, res) => {
+  const shouldRefresh = _req.query.refresh === '1' || _req.query.refresh === 'true';
+  (shouldRefresh ? refreshAllWorkspaceSyncStatuses() : listWorkspaces())
+    .then((workspaces) => {
+      res.json({ workspaces });
+    })
+    .catch((error) => {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Failed to load workspaces.'
+      });
+    });
+});
+
+app.post('/api/workspaces/:workspaceId/sync', async (req, res) => {
+  try {
+    const workspace = await syncWorkspaceFromMain(req.params.workspaceId);
+    res.json({ workspace });
+  } catch (error) {
+    res.status(400).json({
+      error: error instanceof Error ? error.message : 'Failed to sync workspace.'
+    });
+  }
+});
+
+app.post('/api/conversations', async (req, res) => {
   const parsed = createConversationSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({
@@ -99,15 +134,40 @@ app.post('/api/conversations', (req, res) => {
     return;
   }
 
-  createConversation(parsed.data)
-    .then((conversation) => {
-      res.status(201).json({ conversation });
-    })
-    .catch((error) => {
-      res.status(500).json({
-        error: error instanceof Error ? error.message : 'Failed to create conversation.'
-      });
+  try {
+    let workspaceId: string | null = parsed.data.workspaceId || null;
+    let workspacePath: string | null = parsed.data.workspacePath || null;
+    let mode = parsed.data.mode;
+
+    if (workspaceId) {
+      const workspace = await getWorkspace(workspaceId);
+      if (!workspace) {
+        res.status(404).json({ error: 'Workspace not found.' });
+        return;
+      }
+
+      workspacePath = workspace.localPath;
+      mode = 'workspace';
+    } else {
+      workspaceId = null;
+      if (mode === 'workspace' && !workspacePath) {
+        mode = 'chat';
+      }
+    }
+
+    const conversation = await createConversation({
+      title: parsed.data.title,
+      mode,
+      workspaceId,
+      workspacePath
     });
+
+    res.status(201).json({ conversation });
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Failed to create conversation.'
+    });
+  }
 });
 
 app.post('/api/workspaces/validate', (req, res) => {
@@ -343,9 +403,7 @@ wss.on('connection', (socket) => {
       }
 
       const emit = (event: SocketServerEvent) => {
-        if (socket.readyState === socket.OPEN) {
-          socket.send(JSON.stringify(event));
-        }
+        broadcast(event);
       };
 
       try {
