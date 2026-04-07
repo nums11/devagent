@@ -33,6 +33,8 @@ import {
 const THEME_STORAGE_KEY = 'dev-agent-web-theme-mode';
 const MAX_SOCKET_RECONNECT_DELAY_MS = 10000;
 const WORKSPACE_SYNC_REFRESH_INTERVAL_MS = 3 * 60 * 1000;
+const COMPOSER_MIN_HEIGHT_PX = 24;
+const COMPOSER_MAX_HEIGHT_PX = 176;
 
 type ActiveRun = {
   conversationId: string;
@@ -191,6 +193,7 @@ export default function Page() {
   const queuedTurnsRef = React.useRef<Record<string, QueuedTurn>>({});
   const queuedTurnDispatchingRef = React.useRef<Record<string, boolean>>({});
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+  const composerTextareaRef = React.useRef<HTMLTextAreaElement | null>(null);
   const messagesEndRef = React.useRef<HTMLDivElement | null>(null);
 
   const activeConversation = React.useMemo(
@@ -270,6 +273,18 @@ export default function Page() {
   React.useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [timelineItems, activeConversationIsRunning]);
+
+  React.useEffect(() => {
+    const node = composerTextareaRef.current;
+    if (!node) {
+      return;
+    }
+
+    node.style.height = '0px';
+    const nextHeight = Math.min(Math.max(node.scrollHeight, COMPOSER_MIN_HEIGHT_PX), COMPOSER_MAX_HEIGHT_PX);
+    node.style.height = `${nextHeight}px`;
+    node.style.overflowY = node.scrollHeight > COMPOSER_MAX_HEIGHT_PX ? 'auto' : 'hidden';
+  }, [draft]);
 
   React.useEffect(() => {
     if (!activeConversationIsRunning) {
@@ -1099,7 +1114,7 @@ export default function Page() {
       </aside>
 
       <section className="main-pane">
-        <header className="topbar">
+        <header className={`topbar ${viewMode === 'chat' ? 'topbar-chat' : 'topbar-card'}`}>
           <div className="topbar-left">
             <button className="icon-button desktop-hidden" onClick={() => setSidebarOpen(true)} aria-label="Open sidebar">
               ≡
@@ -1315,8 +1330,10 @@ export default function Page() {
                 ) : null}
 
                 <textarea
+                  ref={composerTextareaRef}
                   className="composer-input"
                   value={draft}
+                  rows={1}
                   onChange={(event) => setDraft(event.target.value)}
                   onKeyDown={onComposerKeyDown}
                   placeholder={activeConversationIsRunning ? 'Queue the next turn while Codex is working' : 'Ask for follow-up changes'}

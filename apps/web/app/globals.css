@@ -297,28 +297,40 @@ video {
 
 .main-pane {
   height: 100vh;
-  padding: 22px;
+  padding: 0 22px 22px;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
-  gap: 18px;
+  gap: 12px;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
 
 .topbar {
+  padding: 18px 0 14px;
+}
+
+.topbar-chat {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.topbar-card {
   padding: 18px 20px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 28px;
   backdrop-filter: blur(18px);
 }
 
-.theme-light .topbar {
+.theme-light .topbar-chat {
+  border-bottom-color: #d9d9e0;
+}
+
+.theme-light .topbar-card {
   border-color: #d9d9e0;
   background: #ffffff;
 }
 
-.theme-dark .topbar {
+.theme-dark .topbar-card {
   background: rgba(15, 15, 18, 0.78);
 }
 
@@ -371,7 +383,6 @@ video {
   background: transparent;
 }
 
-.conversation-surface,
 .settings-card,
 .modal-card,
 .composer-shell {
@@ -383,17 +394,26 @@ video {
 .conversation-surface {
   height: 100%;
   min-height: 0;
-  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
   overflow: hidden;
 }
 
+.conversation-surface {
+  border: 0;
+  border-radius: 0;
+  backdrop-filter: none;
+  background: transparent;
+}
+
 .timeline {
+  flex: 1;
   min-height: 0;
-  height: 100%;
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding-right: 6px;
+  padding: 6px 6px 0 0;
 }
 
 .message-row {
@@ -524,7 +544,6 @@ video {
 
 .theme-light .activity-panel,
 .theme-light .composer-shell,
-.theme-light .conversation-surface,
 .theme-light .settings-card,
 .theme-light .modal-card {
   background: #ffffff;
@@ -610,6 +629,8 @@ video {
 
 .composer-shell {
   padding: 16px;
+  display: grid;
+  gap: 12px;
 }
 
 .selected-images {
@@ -654,19 +675,25 @@ video {
 
 .composer-input {
   width: 100%;
-  min-height: 130px;
-  resize: vertical;
-  border-radius: 24px;
-  border: 1px solid;
+  min-height: 24px;
+  max-height: 176px;
+  resize: none;
+  border-radius: 0;
+  border: 0;
   background: transparent;
-  padding: 16px 18px;
+  padding: 0;
   color: inherit;
   font-size: 16px;
   line-height: 22px;
+  outline: none;
 }
 
 .theme-light .composer-input {
-  background: #f5f5f8;
+  background: transparent;
+}
+
+.composer-footer {
+  padding-top: 12px;
 }
 
 .meta-pills {
@@ -736,6 +763,14 @@ video {
   inset: 0;
   background: rgba(3, 3, 6, 0.6);
   backdrop-filter: blur(8px);
+}
+
+.sidebar-scrim {
+  pointer-events: none;
+}
+
+.sidebar-scrim.is-open {
+  pointer-events: auto;
 }
 
 .theme-light .modal-scrim,
@@ -867,7 +902,7 @@ video {
   }
 
   .main-pane {
-    padding: 16px;
+    padding: 0 16px 16px;
   }
 }
 
