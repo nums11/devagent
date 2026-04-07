@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Codex, type Input, type ThreadEvent } from '@openai/codex-sdk';
 import { deriveActivityDrafts } from './activity.js';
 import { config } from './config.js';
@@ -28,6 +29,8 @@ type ImageAttachment = {
 
 const UNTITLED_CONVERSATION = 'New Codex Chat';
 const activeRunControllers = new Map<string, AbortController>();
+const codexBridgeDir = path.dirname(fileURLToPath(import.meta.url));
+const devAgentRoot = path.resolve(codexBridgeDir, '../../..');
 
 function ensureWorkspacePath(workspacePath: string | null): string | undefined {
   if (!workspacePath) {
@@ -106,6 +109,22 @@ function buildWorkspaceContextBlock(conversation: {
   return lines.join('\n');
 }
 
+function buildConversationCapabilityBlock(conversationId: string): string {
+  const publishImageScript = path.join(devAgentRoot, 'scripts/publish-proof-image.mjs');
+  const publishVideoScript = path.join(devAgentRoot, 'scripts/publish-proof-video.mjs');
+  const apiUrl = `http://localhost:${config.port}`;
+
+  return [
+    'Dev Agent chat capabilities:',
+    `- current conversation id: ${conversationId}`,
+    '- you can publish proof media back into this exact chat from any workspace on this machine',
+    `- publish screenshot command: DEV_AGENT_API_URL=${apiUrl} node ${publishImageScript} ${conversationId} <localPath> [message]`,
+    `- publish video command: DEV_AGENT_API_URL=${apiUrl} node ${publishVideoScript} ${conversationId} <localPath> [message]`,
+    '- use the screenshot command for simulator screenshots or still images',
+    '- use the video command for proof videos or screen recordings'
+  ].join('\n');
+}
+
 function toMessageAttachments(attachments: ImageAttachment[]): MessageAttachment[] {
   return attachments.map((attachment) => ({
     id: attachment.id,
@@ -119,12 +138,14 @@ function toMessageAttachments(attachments: ImageAttachment[]): MessageAttachment
 }
 
 function buildRunInput(
+  conversationId: string,
   prompt: string,
   attachments: ImageAttachment[],
   workspaceContext: string | null
 ): Input {
   const trimmedPrompt = prompt.trim();
   const textSections = [
+    buildConversationCapabilityBlock(conversationId),
     workspaceContext,
     trimmedPrompt
       ? `User request:\n${trimmedPrompt}`
@@ -236,7 +257,7 @@ export async function runConversationTurn(
           skipGitRepoCheck: !conversation.workspacePath
         });
 
-    const streamed = await thread.runStreamed(buildRunInput(prompt, attachments, workspaceContext), {
+    const streamed = await thread.runStreamed(buildRunInput(conversationId, prompt, attachments, workspaceContext), {
       signal: abortController.signal
     });
     let finalResponse = '';
