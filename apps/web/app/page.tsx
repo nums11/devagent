@@ -978,6 +978,15 @@ export default function Page() {
     setSelectedImages([]);
   }, [activeConversationId, dispatchRun, draft, selectedImages]);
 
+  const onComposerKeyDown = React.useCallback((event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== 'Enter' || (!event.metaKey && !event.ctrlKey)) {
+      return;
+    }
+
+    event.preventDefault();
+    void sendMessage();
+  }, [sendMessage]);
+
   const cancelActiveRun = React.useCallback(() => {
     if (!activeRun || activeRun.conversationId !== activeConversationId || !socketRef.current) {
       return;
@@ -1309,6 +1318,7 @@ export default function Page() {
                   className="composer-input"
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
+                  onKeyDown={onComposerKeyDown}
                   placeholder={activeConversationIsRunning ? 'Queue the next turn while Codex is working' : 'Ask for follow-up changes'}
                 />
 
