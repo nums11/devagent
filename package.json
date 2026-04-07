@@ -3,14 +3,18 @@
   "private": true,
   "workspaces": [
     "apps/server",
-    "apps/mobile"
+    "apps/mobile",
+    "apps/web"
   ],
   "scripts": {
     "dev:server": "npm run dev --workspace @dev-agent/server",
     "dev:mobile": "npm run start --workspace @dev-agent/mobile",
+    "dev:web": "npm run dev --workspace @dev-agent/web",
     "ios": "npm --workspace @dev-agent/mobile run ios --",
     "android": "npm --workspace @dev-agent/mobile run android --",
-    "web": "npm --workspace @dev-agent/mobile run web --",
+    "web": "npm run dev:web",
+    "web:mobile": "npm --workspace @dev-agent/mobile run web --",
+    "build:web": "npm run build --workspace @dev-agent/web",
     "ios:archive:release": "zsh ./scripts/archive_testflight_xcode.sh archive",
     "ios:testflight": "zsh ./scripts/archive_testflight_xcode.sh archive-and-upload",
     "smoke:ios": "maestro test .maestro/ios/chat-smoke.yaml",
@@ -21,8 +25,8 @@
     "smoke:ios:steer": "maestro test .maestro/ios/steer-smoke.yaml",
     "smoke:ios:steer:stop": "maestro test .maestro/ios/steer-stop-clears-queue-smoke.yaml",
     "publish:proof-video": "node scripts/publish-proof-video.mjs",
-    "typecheck": "npm run typecheck --workspace @dev-agent/server && npm run typecheck --workspace @dev-agent/mobile",
-    "lint": "npm run lint --workspace @dev-agent/server && npm run lint --workspace @dev-agent/mobile"
+    "typecheck": "npm run typecheck --workspace @dev-agent/server && npm run typecheck --workspace @dev-agent/mobile && npm run typecheck --workspace @dev-agent/web",
+    "lint": "npm run lint --workspace @dev-agent/server && npm run lint --workspace @dev-agent/mobile && npm run lint --workspace @dev-agent/web"
   },
   "version": "1.0.0",
   "dependencies": {

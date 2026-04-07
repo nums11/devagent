@@ -1,0 +1,812 @@
+:root {
+  color-scheme: dark;
+  --font-display: "AvenirNextCondensed-Heavy", "Avenir Next Condensed", "Arial Narrow", "Segoe UI", sans-serif;
+  --font-body: "AvenirNext-Medium", "Avenir Next", "Segoe UI", sans-serif;
+  --font-marker: "Marker Felt", "MarkerFelt-Wide", "Comic Sans MS", cursive;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  font-family: var(--font-body);
+  background: #0b0b0d;
+}
+
+body {
+  min-height: 100vh;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+img,
+video {
+  display: block;
+  max-width: 100%;
+}
+
+.shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  position: relative;
+  overflow: hidden;
+}
+
+.theme-dark {
+  color-scheme: dark;
+  background:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.06), transparent 30%),
+    linear-gradient(135deg, #0b0b0d 0%, #111117 45%, #07070a 100%);
+  color: #f5f7fa;
+}
+
+.theme-light {
+  color-scheme: light;
+  background:
+    radial-gradient(circle at top left, rgba(255, 168, 76, 0.16), transparent 28%),
+    linear-gradient(160deg, #f4efe6 0%, #f8f4ed 45%, #ece4d7 100%);
+  color: #16140f;
+}
+
+.theme-dark .sidebar,
+.theme-dark .conversation-surface,
+.theme-dark .composer-shell,
+.theme-dark .settings-card,
+.theme-dark .modal-card,
+.theme-dark .thread-item,
+.theme-dark .message-card,
+.theme-dark .activity-card,
+.theme-dark .command-card,
+.theme-dark .queued-card,
+.theme-dark .workspace-card,
+.theme-dark .theme-option {
+  background: rgba(23, 23, 27, 0.88);
+  border-color: rgba(255, 255, 255, 0.08);
+  color: inherit;
+}
+
+.theme-light .sidebar,
+.theme-light .conversation-surface,
+.theme-light .composer-shell,
+.theme-light .settings-card,
+.theme-light .modal-card,
+.theme-light .thread-item,
+.theme-light .message-card,
+.theme-light .activity-card,
+.theme-light .command-card,
+.theme-light .queued-card,
+.theme-light .workspace-card,
+.theme-light .theme-option {
+  background: rgba(255, 252, 246, 0.88);
+  border-color: rgba(47, 34, 14, 0.12);
+  color: inherit;
+}
+
+.sidebar {
+  border-right: 1px solid;
+  padding: 24px 18px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  backdrop-filter: blur(18px);
+  z-index: 4;
+}
+
+.sidebar-header,
+.topbar,
+.queued-card-header,
+.command-card-header,
+.composer-footer,
+.topbar-left,
+.topbar-actions,
+.composer-footer-left,
+.modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sidebar-eyebrow,
+.panel-eyebrow,
+.activity-kind,
+.command-label,
+.message-index {
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-size: 11px;
+  opacity: 0.68;
+}
+
+.sidebar-title {
+  margin: 0;
+  font-size: 28px;
+  line-height: 1;
+  font-weight: 700;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.15;
+  font-weight: 700;
+}
+
+.modal-card h2 {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.15;
+  font-weight: 700;
+}
+
+.thread-list,
+.activity-feed,
+.timeline {
+  overflow: auto;
+}
+
+.thread-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.thread-item,
+.workspace-card,
+.theme-option,
+.primary-button,
+.secondary-button,
+.pill-button,
+.icon-button,
+.utility-button,
+.send-button {
+  border: 1px solid;
+  border-radius: 22px;
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.thread-item,
+.workspace-card,
+.theme-option {
+  padding: 14px;
+  text-align: left;
+}
+
+.thread-item:hover,
+.workspace-card:hover,
+.theme-option:hover,
+.icon-button:hover,
+.pill-button:hover,
+.utility-button:hover,
+.send-button:hover,
+.primary-button:hover,
+.secondary-button:hover {
+  transform: translateY(-1px);
+}
+
+.thread-item.is-active,
+.workspace-card.is-active,
+.theme-option.is-active {
+  border-color: rgba(240, 140, 42, 0.6);
+  box-shadow: 0 0 0 1px rgba(240, 140, 42, 0.22) inset;
+}
+
+.thread-title,
+.workspace-card strong {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.theme-option strong {
+  display: block;
+  font-size: 16px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.thread-meta,
+.workspace-card span,
+.workspace-card small,
+.theme-option span,
+.topbar-status,
+.topbar-workspace,
+.settings-card p,
+.landing-state,
+.selection-copy,
+.activity-feed-item,
+.activity-feed-empty {
+  opacity: 0.8;
+}
+
+.activity-panel {
+  margin-top: auto;
+  padding: 16px;
+  border: 1px solid;
+  border-radius: 26px;
+  min-height: 240px;
+  backdrop-filter: blur(14px);
+}
+
+.main-pane {
+  padding: 22px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 18px;
+  min-width: 0;
+}
+
+.topbar {
+  padding: 18px 20px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 28px;
+  backdrop-filter: blur(18px);
+}
+
+.theme-light .topbar {
+  border-color: rgba(47, 34, 14, 0.12);
+  background: rgba(255, 249, 241, 0.72);
+}
+
+.theme-dark .topbar {
+  background: rgba(15, 15, 18, 0.78);
+}
+
+.topbar-copy h1,
+.topbar-copy p {
+  margin: 0;
+}
+
+.topbar-status {
+  font-size: 13px;
+}
+
+.topbar-workspace {
+  font-size: 12px;
+}
+
+.icon-button,
+.utility-button,
+.send-button {
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+}
+
+.shell-icon {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+.primary-button,
+.secondary-button,
+.pill-button {
+  padding: 12px 18px;
+  background: transparent;
+}
+
+.conversation-surface,
+.settings-card,
+.modal-card,
+.composer-shell {
+  border: 1px solid;
+  border-radius: 32px;
+  backdrop-filter: blur(20px);
+}
+
+.conversation-surface {
+  min-height: 0;
+  padding: 18px;
+  overflow: hidden;
+}
+
+.timeline {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-right: 6px;
+}
+
+.message-row {
+  display: flex;
+}
+
+.message-row.is-user {
+  justify-content: flex-end;
+}
+
+.message-card,
+.activity-card,
+.command-card,
+.queued-card {
+  border: 1px solid;
+  border-radius: 26px;
+  padding: 16px;
+}
+
+.message-row.is-user .message-card {
+  max-width: min(640px, 82%);
+}
+
+.message-row.is-assistant .message-card {
+  max-width: min(760px, 94%);
+}
+
+.message-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.message-role {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  margin-bottom: 8px;
+  opacity: 0.72;
+}
+
+.message-text {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 16px;
+  line-height: 25px;
+}
+
+.message-index {
+  display: inline-block;
+  margin-top: 10px;
+}
+
+.attachment-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.attachment-grid.is-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.attachment-card {
+  overflow: hidden;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.theme-light .attachment-card {
+  border-color: rgba(47, 34, 14, 0.12);
+}
+
+.attachment-image,
+.attachment-video {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.attachment-caption {
+  display: block;
+  padding: 10px 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.activity-card h3,
+.command-card h3 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.2;
+  font-weight: 700;
+}
+
+.settings-card h2 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.2;
+  font-weight: 700;
+}
+
+.workspace-section h3 {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 1.3px;
+  text-transform: uppercase;
+  opacity: 0.68;
+}
+
+.activity-card p,
+.command-card p,
+.command-card pre,
+.queued-card p,
+.workspace-section p {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+}
+
+.activity-card p {
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.activity-card h3 {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 400;
+}
+
+.command-card code,
+.command-card pre {
+  font-family: "SFMono-Regular", "SF Mono", Monaco, Consolas, monospace;
+  font-size: 13px;
+}
+
+.command-card-body {
+  display: grid;
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.status-pill {
+  border-radius: 999px;
+  padding: 6px 10px;
+  border: 1px solid currentColor;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 1.1px;
+}
+
+.status-running {
+  box-shadow: 0 0 0 1px rgba(245, 196, 112, 0.12) inset;
+}
+
+.status-failed {
+  box-shadow: 0 0 0 1px rgba(239, 92, 92, 0.18) inset;
+}
+
+.run-marker {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 14px;
+  align-items: center;
+  margin: 4px 0;
+}
+
+.run-marker span {
+  height: 1px;
+  background: currentColor;
+  opacity: 0.16;
+}
+
+.run-marker p {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  opacity: 0.72;
+}
+
+.landing-state {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  gap: 6px;
+  font-size: 16px;
+  line-height: 25px;
+  padding: 60px 20px;
+  max-width: 320px;
+  margin: 0 auto;
+}
+
+.landing-state p {
+  margin: 0;
+}
+
+.composer-dock {
+  align-self: end;
+}
+
+.composer-shell {
+  padding: 16px;
+}
+
+.selected-images {
+  display: flex;
+  gap: 10px;
+  overflow: auto;
+  margin-bottom: 12px;
+}
+
+.selected-image-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid;
+  border-radius: 999px;
+  min-width: 0;
+}
+
+.selected-image-chip img {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  object-fit: cover;
+}
+
+.selected-image-chip span {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.selected-image-chip button,
+.queued-card button,
+.copy-button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.composer-input {
+  width: 100%;
+  min-height: 130px;
+  resize: vertical;
+  border-radius: 24px;
+  border: 1px solid;
+  background: transparent;
+  padding: 16px 18px;
+  color: inherit;
+  font-size: 16px;
+  line-height: 22px;
+}
+
+.meta-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.meta-pills span {
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid;
+  font-size: 12px;
+  opacity: 0.82;
+}
+
+.queued-card {
+  margin-bottom: 12px;
+}
+
+.queued-card p {
+  margin: 10px 0 0;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.settings-view {
+  display: grid;
+  gap: 18px;
+  align-content: start;
+}
+
+.settings-card {
+  padding: 22px;
+}
+
+.settings-card > p {
+  font-size: 15px;
+  line-height: 23px;
+}
+
+.theme-grid,
+.workspace-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.runtime-list {
+  margin: 14px 0 0;
+  padding-left: 18px;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.modal-shell {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  z-index: 30;
+}
+
+.modal-scrim,
+.sidebar-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(3, 3, 6, 0.6);
+  backdrop-filter: blur(8px);
+}
+
+.modal-card {
+  position: relative;
+  width: min(920px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  padding: 24px;
+}
+
+.workspace-section + .workspace-section {
+  margin-top: 18px;
+}
+
+.selection-copy.is-error {
+  color: #ff8175;
+}
+
+.workspace-card span,
+.theme-option span,
+.selection-copy {
+  font-size: 13px;
+  line-height: 19px;
+}
+
+.workspace-card small {
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.thread-meta,
+.activity-feed-item,
+.activity-feed-empty {
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.topbar-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.pill-button {
+  min-width: 70px;
+  height: 38px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.primary-button,
+.secondary-button {
+  font-size: 14px;
+  padding: 10px 16px;
+}
+
+.primary-button {
+  font-weight: 700;
+}
+
+.secondary-button {
+  font-weight: 600;
+}
+
+.queued-card-header span {
+  font-size: 11px;
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+  opacity: 0.72;
+}
+
+.queued-card-header button,
+.copy-button {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.send-button {
+  font-size: 21px;
+  font-weight: 700;
+}
+
+.desktop-hidden {
+  display: none;
+}
+
+.mobile-only {
+  display: none;
+}
+
+@media (max-width: 1100px) {
+  .shell {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: min(340px, 88vw);
+    transform: translateX(-105%);
+    transition: transform 180ms ease;
+  }
+
+  .sidebar.is-open {
+    transform: translateX(0);
+  }
+
+  .sidebar-scrim {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 180ms ease;
+  }
+
+  .sidebar-scrim.is-open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .desktop-hidden,
+  .mobile-only {
+    display: inline-flex;
+  }
+
+  .main-pane {
+    padding: 16px;
+  }
+}
+
+@media (max-width: 760px) {
+  .theme-grid,
+  .workspace-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar,
+  .composer-footer,
+  .topbar-left,
+  .topbar-actions,
+  .composer-footer-left,
+  .modal-actions {
+    align-items: stretch;
+  }
+
+  .topbar,
+  .composer-footer,
+  .composer-footer-left,
+  .topbar-actions,
+  .modal-actions {
+    flex-direction: column;
+  }
+
+  .message-row.is-user .message-card,
+  .message-row.is-assistant .message-card {
+    max-width: 100%;
+  }
+}

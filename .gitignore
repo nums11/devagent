@@ -7,8 +7,10 @@ coverage
 artifacts/
 .env
 .env.local
+*.tsbuildinfo
 *.log
 apps/server/data
 apps/mobile/.expo
 apps/mobile/dist
+apps/web/.next
 supabase/.temp
