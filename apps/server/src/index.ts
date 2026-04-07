@@ -19,7 +19,7 @@ import {
   listRuns,
   listWorkspaces
 } from './db.js';
-import { createConversationSchema, publishProofVideoSchema, validateWorkspaceSchema, websocketClientMessageSchema } from './schemas.js';
+import { createConversationSchema, publishProofMediaSchema, validateWorkspaceSchema, websocketClientMessageSchema } from './schemas.js';
 import { cancelRun, runConversationTurn } from './codexBridge.js';
 import { refreshAllWorkspaceSyncStatuses, syncWorkspaceFromMain } from './workspaceSync.js';
 import { getSupabaseAdmin } from './supabaseAdmin.js';
@@ -49,10 +49,169 @@ const upload = multer({
 app.use('/uploads', express.static(uploadDir));
 
 const proofVideoBucket = 'proof-videos';
+const proofImageBucket = 'proof-images';
 const sockets = new Set<WebSocket>();
 
 function sanitizeFileName(fileName: string): string {
   return fileName.replace(/[^a-zA-Z0-9._-]+/g, '-');
+}
+
+function inferProofMediaMetadata(localPath: string, fallbackName?: string): {
+  fileName: string;
+  mimeType: string;
+  attachmentType: 'image' | 'video';
+} {
+  const extension = path.extname(localPath).toLowerCase();
+  const fileName = sanitizeFileName(fallbackName || path.basename(localPath));
+
+  if (extension === '.mov') {
+    return {
+      fileName,
+      mimeType: 'video/quicktime',
+      attachmentType: 'video'
+    };
+  }
+
+  if (extension === '.m4v') {
+    return {
+      fileName,
+      mimeType: 'video/x-m4v',
+      attachmentType: 'video'
+    };
+  }
+
+  if (extension === '.png') {
+    return {
+      fileName,
+      mimeType: 'image/png',
+      attachmentType: 'image'
+    };
+  }
+
+  if (extension === '.jpg' || extension === '.jpeg') {
+    return {
+      fileName,
+      mimeType: 'image/jpeg',
+      attachmentType: 'image'
+    };
+  }
+
+  if (extension === '.webp') {
+    return {
+      fileName,
+      mimeType: 'image/webp',
+      attachmentType: 'image'
+    };
+  }
+
+  if (extension === '.gif') {
+    return {
+      fileName,
+      mimeType: 'image/gif',
+      attachmentType: 'image'
+    };
+  }
+
+  return {
+    fileName,
+    mimeType: 'video/mp4',
+    attachmentType: 'video'
+  };
+}
+
+async function publishProofMedia(params: {
+  conversationId: string;
+  localPath: string;
+  content?: string;
+  fileName?: string;
+  defaultContent: string;
+  bucketName: string;
+  allowTypes: Array<'image' | 'video'>;
+}) {
+  const conversation = await getConversation(params.conversationId);
+  if (!conversation) {
+    throw new Error('Conversation not found.');
+  }
+
+  const localPath = path.resolve(params.localPath);
+  const stats = fs.statSync(localPath);
+  if (!stats.isFile()) {
+    throw new Error('Proof media path must point to a file.');
+  }
+
+  const metadata = inferProofMediaMetadata(localPath, params.fileName);
+  if (!params.allowTypes.includes(metadata.attachmentType)) {
+    throw new Error(
+      params.allowTypes.length === 1 && params.allowTypes[0] === 'image'
+        ? 'Proof image path must point to a supported image file.'
+        : 'Proof media type is not supported for this endpoint.'
+    );
+  }
+
+  const storagePath = `${conversation.id}/${Date.now()}-${metadata.fileName}`;
+  const fileBuffer = fs.readFileSync(localPath);
+  const supabase = getSupabaseAdmin();
+  let uploadResult = await supabase.storage.from(params.bucketName).upload(storagePath, fileBuffer, {
+    contentType: metadata.mimeType,
+    upsert: false
+  });
+
+  if (uploadResult.error && /bucket/i.test(uploadResult.error.message) && /not found/i.test(uploadResult.error.message)) {
+    const createBucketResult = await supabase.storage.createBucket(params.bucketName, {
+      public: true
+    });
+
+    if (createBucketResult.error && !/already exists/i.test(createBucketResult.error.message)) {
+      throw new Error(`Failed to create proof media bucket: ${createBucketResult.error.message}`);
+    }
+
+    uploadResult = await supabase.storage.from(params.bucketName).upload(storagePath, fileBuffer, {
+      contentType: metadata.mimeType,
+      upsert: false
+    });
+  }
+
+  if (uploadResult.error) {
+    throw new Error(`Failed to upload proof media: ${uploadResult.error.message}`);
+  }
+
+  const { data: publicUrlData } = supabase.storage.from(params.bucketName).getPublicUrl(storagePath);
+  const publicUrl = publicUrlData.publicUrl;
+  const message = await addMessage({
+    conversationId: conversation.id,
+    role: 'assistant',
+    content: params.content || params.defaultContent,
+    attachments: [
+      {
+        id: storagePath,
+        type: metadata.attachmentType,
+        fileName: metadata.fileName,
+        mimeType: metadata.mimeType,
+        uploadedPath: storagePath,
+        previewUrl: publicUrl,
+        mediaUrl: publicUrl
+      }
+    ]
+  });
+
+  const updatedConversation = await getConversation(conversation.id);
+  if (updatedConversation) {
+    broadcast({
+      type: 'conversation.updated',
+      conversation: updatedConversation
+    });
+  }
+  broadcast({
+    type: 'conversation.message.created',
+    conversationId: conversation.id,
+    message
+  });
+
+  return {
+    message,
+    storagePath,
+    publicUrl
+  };
 }
 
 function broadcast(event: SocketServerEvent) {
@@ -247,7 +406,7 @@ app.post('/api/uploads/image', upload.single('image'), (req, res) => {
 });
 
 app.post('/api/conversations/:conversationId/proof-video', async (req, res) => {
-  const parsed = publishProofVideoSchema.safeParse(req.body);
+  const parsed = publishProofMediaSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({
       error: 'Invalid proof video payload.',
@@ -257,78 +416,49 @@ app.post('/api/conversations/:conversationId/proof-video', async (req, res) => {
   }
 
   try {
-    const conversation = await getConversation(req.params.conversationId);
-    if (!conversation) {
-      res.status(404).json({ error: 'Conversation not found.' });
-      return;
-    }
-
-    const localPath = path.resolve(parsed.data.localPath);
-    const stats = fs.statSync(localPath);
-    if (!stats.isFile()) {
-      res.status(400).json({ error: 'Proof video path must point to a file.' });
-      return;
-    }
-
-    const extension = path.extname(localPath).toLowerCase() || '.mp4';
-    const mimeType =
-      extension === '.mov'
-        ? 'video/quicktime'
-        : extension === '.m4v'
-          ? 'video/x-m4v'
-          : 'video/mp4';
-    const fileName = sanitizeFileName(parsed.data.fileName || path.basename(localPath));
-    const storagePath = `${conversation.id}/${Date.now()}-${fileName}`;
-    const fileBuffer = fs.readFileSync(localPath);
-    const supabase = getSupabaseAdmin();
-    const uploadResult = await supabase.storage.from(proofVideoBucket).upload(storagePath, fileBuffer, {
-      contentType: mimeType,
-      upsert: false
+    const result = await publishProofMedia({
+      conversationId: req.params.conversationId,
+      localPath: parsed.data.localPath,
+      fileName: parsed.data.fileName,
+      content: parsed.data.content,
+      defaultContent: 'Feature verified successfully. Proof video attached.',
+      bucketName: proofVideoBucket,
+      allowTypes: ['video']
     });
 
-    if (uploadResult.error) {
-      throw new Error(`Failed to upload proof video: ${uploadResult.error.message}`);
-    }
-
-    const { data: publicUrlData } = supabase.storage.from(proofVideoBucket).getPublicUrl(storagePath);
-    const publicUrl = publicUrlData.publicUrl;
-    const message = await addMessage({
-      conversationId: conversation.id,
-      role: 'assistant',
-      content: parsed.data.content || 'Feature verified successfully. Proof video attached.',
-      attachments: [
-        {
-          id: storagePath,
-          type: 'video',
-          fileName,
-          mimeType,
-          uploadedPath: storagePath,
-          previewUrl: publicUrl,
-          mediaUrl: publicUrl
-        }
-      ]
-    });
-    const updatedConversation = await getConversation(conversation.id);
-    if (updatedConversation) {
-      broadcast({
-        type: 'conversation.updated',
-        conversation: updatedConversation
-      });
-    }
-    broadcast({
-      type: 'conversation.message.created',
-      conversationId: conversation.id,
-      message
-    });
-
-    res.status(201).json({
-      message,
-      storagePath,
-      publicUrl
-    });
+    res.status(201).json(result);
   } catch (error) {
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to publish proof video.'
+    });
+  }
+});
+
+app.post('/api/conversations/:conversationId/proof-image', async (req, res) => {
+  const parsed = publishProofMediaSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({
+      error: 'Invalid proof image payload.',
+      issues: parsed.error.flatten()
+    });
+    return;
+  }
+
+  try {
+    const result = await publishProofMedia({
+      conversationId: req.params.conversationId,
+      localPath: parsed.data.localPath,
+      fileName: parsed.data.fileName,
+      content: parsed.data.content,
+      defaultContent: 'Simulator screenshot attached.',
+      bucketName: proofImageBucket,
+      allowTypes: ['image']
+    });
+
+    res.status(201).json(result);
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Failed to publish proof image.'
     });
   }
 });

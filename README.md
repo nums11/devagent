@@ -105,18 +105,20 @@ The Maestro flow lives at [/Users/team7agent/dev-agent/.maestro/ios/chat-smoke.y
 
 The live datastore is now the linked Supabase project. The mobile app still talks to the local Node bridge for Codex execution, but the bridge persists conversations, messages, and runs to Supabase instead of local SQLite.
 
-## Proof Videos In Chat
+## Proof Media In Chat
 
-When a feature run produces a proof video, the server can publish that video directly into a chat conversation as an assistant message attachment.
+When a feature run produces proof media, the server can publish that artifact directly into a chat conversation as an assistant message attachment.
 
 From the repo root:
 
 ```bash
 npm run publish:proof-video -- <conversationId> <localPath> "Proof video attached."
+npm run publish:proof-image -- <conversationId> <localPath> "Simulator screenshot attached."
 ```
 
 That flow:
-- uploads the local video file into the Supabase Storage bucket `proof-videos`
+- uploads proof videos into the Supabase Storage bucket `proof-videos`
+- uploads proof screenshots into the Supabase Storage bucket `proof-images`
 - creates an assistant message in the target conversation
 - broadcasts the new message over WebSocket so an open mobile chat can update live
 

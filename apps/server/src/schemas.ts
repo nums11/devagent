@@ -10,7 +10,7 @@ export const imageAttachmentSchema = z.object({
   mediaUrl: z.string().min(1).optional().nullable()
 });
 
-export const publishProofVideoSchema = z.object({
+export const publishProofMediaSchema = z.object({
   localPath: z.string().min(1),
   fileName: z.string().min(1).optional(),
   content: z.string().trim().max(1000).optional()

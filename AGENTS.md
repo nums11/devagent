@@ -25,6 +25,7 @@ For `dev-agent`, that phrase means:
    - or run `maestro test .maestro/ios/<flow>.yaml` for a new feature-specific flow
 7. If a harness run produces a proof video and the work was requested from inside a `dev-agent` chat, publish that video back into the conversation:
    - `npm run publish:proof-video -- <conversationId> <localPath> [message]`
+   - if the user asks for a screenshot instead of a full harness proof video, use `npm run publish:proof-image -- <conversationId> <localPath> [message]`
 8. If the flow fails:
    - inspect the latest debug output in `.maestro/tests/`
    - inspect screenshots and hierarchy output
@@ -45,6 +46,7 @@ For `dev-agent`, that phrase means:
 - If a task needs proof media, prefer saving it under `artifacts/ios/<timestamp>-<feature>/`
 - TestFlight release artifacts are written under `artifacts/testflight/<timestamp>/`
 - Proof videos published into chat are stored in the Supabase Storage bucket `proof-videos`
+- Proof screenshots published into chat are stored in the Supabase Storage bucket `proof-images`
 - When reporting completion, include:
   - changed behavior
   - key files touched
