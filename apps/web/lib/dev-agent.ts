@@ -2,6 +2,7 @@ export type Conversation = {
   id: string;
   title: string;
   mode: 'chat' | 'workspace' | 'harness';
+  attentionState?: 'idle' | 'running' | 'unread';
   workspaceId?: string | null;
   workspacePath?: string | null;
   workspaceName?: string | null;
@@ -14,6 +15,9 @@ export type Conversation = {
   workspaceSyncStatus?: 'fresh' | 'stale' | 'syncing' | 'conflicted' | null;
   repoProfileSlug?: string | null;
   repoProfileName?: string | null;
+  lastViewedAt?: string | null;
+  lastAgentUpdateAt?: string | null;
+  activeRunStartedAt?: string | null;
 };
 
 export type MessageAttachment = {

@@ -187,6 +187,7 @@ export default function Page() {
   const shouldMaintainSocketRef = React.useRef(false);
   const activeConversationIdRef = React.useRef<string | null>(null);
   const activeRunRef = React.useRef<ActiveRun | null>(null);
+  const viewModeRef = React.useRef<ViewMode>('chat');
   const queuedTurnsRef = React.useRef<Record<string, QueuedTurn>>({});
   const queuedTurnDispatchingRef = React.useRef<Record<string, boolean>>({});
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
@@ -246,6 +247,10 @@ export default function Page() {
   React.useEffect(() => {
     activeRunRef.current = activeRun;
   }, [activeRun]);
+
+  React.useEffect(() => {
+    viewModeRef.current = viewMode;
+  }, [viewMode]);
 
   React.useEffect(() => {
     queuedTurnsRef.current = queuedTurns;
@@ -320,7 +325,24 @@ export default function Page() {
     }
   }, [apiUrl]);
 
-  const loadConversationDetail = React.useCallback(async (conversationId: string) => {
+  const markConversationViewed = React.useCallback(async (conversationId: string) => {
+    const response = await fetch(`${apiUrl}/api/conversations/${conversationId}/view`, {
+      method: 'POST'
+    });
+    const payload = await readResponsePayload<{ conversation?: Conversation; error?: string }>(response);
+    if (!response.ok || !payload.conversation) {
+      throw new Error(payload.error || 'Failed to mark conversation viewed.');
+    }
+    setConversations((current) =>
+      current.map((item) => (item.id === payload.conversation?.id ? payload.conversation : item))
+    );
+    return payload.conversation;
+  }, [apiUrl]);
+
+  const loadConversationDetail = React.useCallback(async (
+    conversationId: string,
+    options: { markViewed?: boolean } = {}
+  ) => {
     const response = await fetch(`${apiUrl}/api/conversations/${conversationId}`);
     const payload = await readResponsePayload<{
       messages?: Message[];
@@ -338,7 +360,19 @@ export default function Page() {
     setActivities(nextActivities);
     setRuns(nextRuns);
     syncActiveRunFromRuns(conversationId, nextRuns, setActiveRun, activeConversationIdRef.current, setStatus);
-  }, [apiUrl]);
+    const shouldMarkViewed =
+      options.markViewed !== false &&
+      viewModeRef.current === 'chat' &&
+      document.visibilityState === 'visible' &&
+      activeConversationIdRef.current === conversationId;
+    if (shouldMarkViewed) {
+      try {
+        await markConversationViewed(conversationId);
+      } catch {
+        // Keep the visible conversation usable even if the viewed timestamp fails to persist.
+      }
+    }
+  }, [apiUrl, markConversationViewed]);
 
   const loadRuntime = React.useCallback(async () => {
     const response = await fetch(`${apiUrl}/api/runtime-config`);
@@ -427,6 +461,13 @@ export default function Page() {
             const alreadyPresent = current.some((item) => item.id === event.message.id);
             return alreadyPresent ? current : [...current, event.message];
           });
+          if (
+            event.message.role === 'assistant' &&
+            viewModeRef.current === 'chat' &&
+            document.visibilityState === 'visible'
+          ) {
+            markConversationViewed(event.conversationId).catch(() => undefined);
+          }
         }
         return;
       }
@@ -585,7 +626,7 @@ export default function Page() {
         connectSocket(true);
       }, delay);
     };
-  }, [clearReconnectTimeout, loadConversationDetail, refreshConversationState, wsUrl]);
+  }, [clearReconnectTimeout, loadConversationDetail, markConversationViewed, refreshConversationState, wsUrl]);
 
   React.useEffect(() => {
     loadConversations().catch((error) => {
@@ -1016,7 +1057,14 @@ export default function Page() {
                 className={`thread-item ${active ? 'is-active' : ''}`}
                 onClick={() => selectConversation(conversation.id)}
               >
-                <span className="thread-title">{conversation.title}</span>
+                <span className="thread-title-row">
+                  <span className="thread-title">{conversation.title}</span>
+                  {conversation.attentionState === 'running' ? (
+                    <span className="thread-dot thread-dot-running" aria-label="Agent running" />
+                  ) : conversation.attentionState === 'unread' ? (
+                    <span className="thread-dot thread-dot-unread" aria-label="Unread agent update" />
+                  ) : null}
+                </span>
                 <span className="thread-meta">
                   {formatModeLabel(conversation.mode)} · {formatWorkspaceLabel(conversation)}
                 </span>

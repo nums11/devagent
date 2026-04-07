@@ -1,4 +1,5 @@
 export type ConversationMode = 'chat' | 'workspace' | 'harness';
+export type ConversationAttentionState = 'idle' | 'running' | 'unread';
 
 export type RepoProfileRecord = {
   id: string;
@@ -46,6 +47,7 @@ export type ConversationRecord = {
   id: string;
   title: string;
   mode: ConversationMode;
+  attentionState: ConversationAttentionState;
   workspaceId: string | null;
   workspacePath: string | null;
   workspaceName: string | null;
@@ -58,6 +60,9 @@ export type ConversationRecord = {
   workspaceSyncStatus: WorkspaceSyncStatus | null;
   repoProfileSlug: string | null;
   repoProfileName: string | null;
+  lastViewedAt: string | null;
+  lastAgentUpdateAt: string | null;
+  activeRunStartedAt: string | null;
   codexThreadId: string | null;
   createdAt: string;
   updatedAt: string;

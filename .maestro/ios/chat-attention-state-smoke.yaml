@@ -1,0 +1,29 @@
+appId: com.team7.devagent
+---
+- launchApp
+- extendedWaitUntil:
+    visible:
+      id: sidebar-toggle-button
+    timeout: 15000
+- tapOn:
+    id: sidebar-toggle-button
+- extendedWaitUntil:
+    visible:
+      id: conversation-attention-running-${RUNNING_ID}
+    timeout: 10000
+- extendedWaitUntil:
+    visible:
+      id: conversation-attention-unread-${UNREAD_ID}
+    timeout: 10000
+- tapOn:
+    id: conversation-item-${UNREAD_ID}
+- extendedWaitUntil:
+    visible:
+      id: composer-input
+    timeout: 10000
+- tapOn:
+    id: sidebar-toggle-button
+- assertNotVisible:
+    id: conversation-attention-unread-${UNREAD_ID}
+- assertVisible:
+    id: conversation-attention-running-${RUNNING_ID}

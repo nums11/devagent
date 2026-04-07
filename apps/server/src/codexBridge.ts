@@ -193,6 +193,13 @@ export async function runConversationTurn(
     conversationId,
     prompt: prompt.trim() || `[${attachments.length} image attachment${attachments.length === 1 ? '' : 's'}]`
   });
+  const runningConversation = await getConversation(conversationId);
+  if (runningConversation) {
+    emit({
+      type: 'conversation.updated',
+      conversation: runningConversation
+    });
+  }
 
   emit({
     type: 'conversation.run.started',
@@ -286,7 +293,14 @@ export async function runConversationTurn(
       role: 'assistant',
       content: finalResponse
     });
-    await completeRun(run.id, finalResponse);
+    await completeRun(run.id, conversationId, finalResponse);
+    const updatedConversation = await getConversation(conversationId);
+    if (updatedConversation) {
+      emit({
+        type: 'conversation.updated',
+        conversation: updatedConversation
+      });
+    }
 
     emit({
       type: 'conversation.run.completed',
@@ -295,7 +309,7 @@ export async function runConversationTurn(
       finalResponse
     });
   } catch (error) {
-    await failRun(run.id);
+    await failRun(run.id, conversationId);
     const wasCancelled = abortController.signal.aborted;
     const message = wasCancelled
       ? 'Run stopped by user.'
@@ -324,6 +338,13 @@ export async function runConversationTurn(
       wasCancelled || message.includes('no rollout found for thread id');
     if (shouldResetThread) {
       await updateConversationThread(conversationId, null);
+    }
+    const updatedConversation = await getConversation(conversationId);
+    if (updatedConversation) {
+      emit({
+        type: 'conversation.updated',
+        conversation: updatedConversation
+      });
     }
     if (wasCancelled) {
       emit({

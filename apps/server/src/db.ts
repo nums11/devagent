@@ -4,6 +4,7 @@ import type {
   ActivityKind,
   ActivityRecord,
   ActivityStatus,
+  ConversationAttentionState,
   ConversationMode,
   ConversationRecord,
   MessageAttachment,
@@ -69,11 +70,36 @@ const CONVERSATION_SELECT = `
   mode,
   workspace_id,
   workspace_path,
+  last_viewed_at,
+  last_agent_update_at,
+  active_run_started_at,
   codex_thread_id,
   created_at,
   updated_at,
   workspace:dev_agent_workspaces!dev_agent_conversations_workspace_id_fkey(${WORKSPACE_SELECT})
 `;
+
+function deriveConversationAttentionState(input: {
+  lastViewedAt: string | null;
+  lastAgentUpdateAt: string | null;
+  activeRunStartedAt: string | null;
+}): ConversationAttentionState {
+  if (input.activeRunStartedAt) {
+    return 'running';
+  }
+
+  if (!input.lastAgentUpdateAt) {
+    return 'idle';
+  }
+
+  if (!input.lastViewedAt) {
+    return 'unread';
+  }
+
+  return new Date(input.lastAgentUpdateAt).getTime() > new Date(input.lastViewedAt).getTime()
+    ? 'unread'
+    : 'idle';
+}
 
 function mapRepoProfile(row: {
   id: string;
@@ -198,6 +224,9 @@ function mapConversation(row: {
   mode: ConversationMode;
   workspace_id: string | null;
   workspace_path: string | null;
+  last_viewed_at: string | null;
+  last_agent_update_at: string | null;
+  active_run_started_at: string | null;
   codex_thread_id: string | null;
   created_at: string;
   updated_at: string;
@@ -271,6 +300,11 @@ function mapConversation(row: {
     id: row.id,
     title: row.title,
     mode: row.mode,
+    attentionState: deriveConversationAttentionState({
+      lastViewedAt: row.last_viewed_at,
+      lastAgentUpdateAt: row.last_agent_update_at,
+      activeRunStartedAt: row.active_run_started_at
+    }),
     workspaceId: row.workspace_id,
     workspacePath: row.workspace_path,
     workspaceName: workspace?.name || null,
@@ -283,6 +317,9 @@ function mapConversation(row: {
     workspaceSyncStatus: workspace?.syncStatus || null,
     repoProfileSlug: workspace?.repoProfile?.slug || null,
     repoProfileName: workspace?.repoProfile?.name || null,
+    lastViewedAt: row.last_viewed_at,
+    lastAgentUpdateAt: row.last_agent_update_at,
+    activeRunStartedAt: row.active_run_started_at,
     codexThreadId: row.codex_thread_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -427,6 +464,9 @@ export async function createConversation(input: {
     mode: input.mode,
     workspace_id: input.workspaceId || null,
     workspace_path: input.workspacePath || null,
+    last_viewed_at: now(),
+    last_agent_update_at: null,
+    active_run_started_at: null,
     codex_thread_id: null,
     created_at: now(),
     updated_at: now()
@@ -569,12 +609,20 @@ export async function workspaceHasActiveRuns(workspaceId: string): Promise<boole
   return Boolean(runRows?.length);
 }
 
-export async function touchConversation(conversationId: string): Promise<void> {
+export async function touchConversation(
+  conversationId: string,
+  extra: Partial<{
+    last_viewed_at: string | null;
+    last_agent_update_at: string | null;
+    active_run_started_at: string | null;
+  }> = {}
+): Promise<void> {
   const supabase = getSupabaseAdmin();
   const { error } = await supabase
     .from('dev_agent_conversations')
     .update({
-      updated_at: now()
+      updated_at: now(),
+      ...extra
     })
     .eq('id', conversationId);
 
@@ -622,7 +670,14 @@ export async function addMessage(input: {
     .select('id,conversation_id,role,content,metadata,created_at')
     .single();
 
-  await touchConversation(input.conversationId);
+  await touchConversation(
+    input.conversationId,
+    input.role === 'assistant'
+      ? {
+          last_agent_update_at: record.created_at
+        }
+      : {}
+  );
   return mapMessage(requireData(error, data, 'Failed to add message'));
 }
 
@@ -647,11 +702,17 @@ export async function createRun(input: {
     .select('id,conversation_id,prompt,status,started_at,completed_at,final_response')
     .single();
 
-  await touchConversation(input.conversationId);
+  await touchConversation(input.conversationId, {
+    active_run_started_at: record.started_at
+  });
   return mapRun(requireData(error, data, 'Failed to create run'));
 }
 
-export async function completeRun(runId: string, finalResponse: string): Promise<void> {
+export async function completeRun(
+  runId: string,
+  conversationId: string,
+  finalResponse: string
+): Promise<void> {
   const supabase = getSupabaseAdmin();
   const { error } = await supabase
     .from('dev_agent_runs')
@@ -665,9 +726,14 @@ export async function completeRun(runId: string, finalResponse: string): Promise
   if (error) {
     throw new Error(`Failed to complete run: ${error.message}`);
   }
+
+  await touchConversation(conversationId, {
+    last_agent_update_at: now(),
+    active_run_started_at: null
+  });
 }
 
-export async function failRun(runId: string): Promise<void> {
+export async function failRun(runId: string, conversationId: string): Promise<void> {
   const supabase = getSupabaseAdmin();
   const { error } = await supabase
     .from('dev_agent_runs')
@@ -680,6 +746,26 @@ export async function failRun(runId: string): Promise<void> {
   if (error) {
     throw new Error(`Failed to mark run failed: ${error.message}`);
   }
+
+  await touchConversation(conversationId, {
+    last_agent_update_at: now(),
+    active_run_started_at: null
+  });
+}
+
+export async function markConversationViewed(conversationId: string): Promise<ConversationRecord> {
+  const supabase = getSupabaseAdmin();
+  const viewedAt = now();
+  const { data, error } = await supabase
+    .from('dev_agent_conversations')
+    .update({
+      last_viewed_at: viewedAt
+    })
+    .eq('id', conversationId)
+    .select(CONVERSATION_SELECT)
+    .single();
+
+  return mapConversation(requireData(error, data, 'Failed to mark conversation viewed'));
 }
 
 export async function listRuns(conversationId: string): Promise<RunRecord[]> {

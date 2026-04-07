@@ -32,6 +32,7 @@ type Conversation = {
   id: string;
   title: string;
   mode: 'chat' | 'workspace' | 'harness';
+  attentionState?: 'idle' | 'running' | 'unread';
   workspaceId?: string | null;
   workspacePath?: string | null;
   workspaceName?: string | null;
@@ -44,6 +45,9 @@ type Conversation = {
   workspaceSyncStatus?: 'fresh' | 'stale' | 'syncing' | 'conflicted' | null;
   repoProfileSlug?: string | null;
   repoProfileName?: string | null;
+  lastViewedAt?: string | null;
+  lastAgentUpdateAt?: string | null;
+  activeRunStartedAt?: string | null;
 };
 
 type Message = {
@@ -860,11 +864,29 @@ function createStyles(theme: Theme, sidebarWidth: number) {
     threadItemActive: {
       backgroundColor: theme.activeThread
     },
+    threadTitleRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 10,
+      marginBottom: 4
+    },
     threadTitle: {
+      flex: 1,
       color: theme.text,
       fontSize: 15,
-      fontWeight: '600',
-      marginBottom: 4
+      fontWeight: '600'
+    },
+    threadAttentionDot: {
+      width: 10,
+      height: 10,
+      borderRadius: 999
+    },
+    threadAttentionDotRunning: {
+      backgroundColor: '#4F88FF'
+    },
+    threadAttentionDotUnread: {
+      backgroundColor: '#2DCF74'
     },
     threadMeta: {
       color: theme.textSubtle,
@@ -2012,6 +2034,7 @@ export default function App() {
   const composerTouchStartYRef = React.useRef<number | null>(null);
   const activeConversationIdRef = React.useRef<string | null>(null);
   const activeRunRef = React.useRef<{ conversationId: string; runId: string; startedAt: string } | null>(null);
+  const viewModeRef = React.useRef<ViewMode>('chat');
   const queuedTurnsRef = React.useRef<QueuedTurnMap>({});
   const dispatchQueuedTurnRef = React.useRef<(conversationId: string, queuedTurn: QueuedTurn) => void>(() => {});
   const queuedTurnDispatchingRef = React.useRef<Record<string, boolean>>({});
@@ -2274,7 +2297,24 @@ export default function App() {
     }
   }, []);
 
-  const loadConversationDetail = React.useCallback(async (conversationId: string) => {
+  const markConversationViewed = React.useCallback(async (conversationId: string) => {
+    const response = await fetch(`${API_URL}/api/conversations/${conversationId}/view`, {
+      method: 'POST'
+    });
+    const payload = await readResponsePayload<{ conversation?: Conversation; error?: string }>(response);
+    if (!response.ok || !payload.conversation) {
+      throw new Error(payload.error || 'Failed to mark conversation viewed.');
+    }
+    setConversations((current) =>
+      current.map((item) => (item.id === payload.conversation?.id ? payload.conversation : item))
+    );
+    return payload.conversation;
+  }, []);
+
+  const loadConversationDetail = React.useCallback(async (
+    conversationId: string,
+    options: { markViewed?: boolean } = {}
+  ) => {
     const response = await fetch(`${API_URL}/api/conversations/${conversationId}`);
     const payload = await readResponsePayload<{
       messages?: Message[];
@@ -2292,7 +2332,19 @@ export default function App() {
     setActivities(nextActivities);
     setRuns(nextRuns);
     syncActiveRunFromRuns(conversationId, nextRuns);
-  }, [syncActiveRunFromRuns]);
+    const shouldMarkViewed =
+      options.markViewed !== false &&
+      viewModeRef.current === 'chat' &&
+      appStateRef.current === 'active' &&
+      activeConversationIdRef.current === conversationId;
+    if (shouldMarkViewed) {
+      try {
+        await markConversationViewed(conversationId);
+      } catch {
+        // Keep the current conversation visible even if the viewed timestamp fails to persist.
+      }
+    }
+  }, [markConversationViewed, syncActiveRunFromRuns]);
 
   const loadRuntime = React.useCallback(async () => {
     const response = await fetch(`${API_URL}/api/runtime-config`);
@@ -2391,6 +2443,15 @@ export default function App() {
             const alreadyPresent = current.some((item) => item.id === event.message.id);
             return alreadyPresent ? current : [...current, event.message];
           });
+          if (
+            event.message.role === 'assistant' &&
+            viewModeRef.current === 'chat' &&
+            appStateRef.current === 'active'
+          ) {
+            markConversationViewed(event.conversationId).catch(() => {
+              // Ignore viewed-mark failures during live updates.
+            });
+          }
         }
         return;
       }
@@ -2560,7 +2621,7 @@ export default function App() {
         connectSocket(true);
       }, delay);
     };
-  }, [clearReconnectTimeout, loadConversationDetail, refreshConversationState]);
+  }, [clearReconnectTimeout, loadConversationDetail, markConversationViewed, refreshConversationState]);
 
   React.useEffect(() => {
     activeConversationIdRef.current = activeConversationId;
@@ -2569,6 +2630,10 @@ export default function App() {
   React.useEffect(() => {
     activeRunRef.current = activeRun;
   }, [activeRun]);
+
+  React.useEffect(() => {
+    viewModeRef.current = viewMode;
+  }, [viewMode]);
 
   React.useEffect(() => {
     queuedTurnsRef.current = queuedTurns;
@@ -3926,9 +3991,22 @@ export default function App() {
                     style={[styles.threadItem, active && styles.threadItemActive]}
                     onPress={() => selectConversation(conversation.id)}
                   >
-                    <Text numberOfLines={2} style={styles.threadTitle}>
-                      {conversation.title}
-                    </Text>
+                    <View style={styles.threadTitleRow}>
+                      <Text numberOfLines={2} style={styles.threadTitle}>
+                        {conversation.title}
+                      </Text>
+                      {conversation.attentionState === 'running' ? (
+                        <View
+                          testID={`conversation-attention-running-${conversation.id}`}
+                          style={[styles.threadAttentionDot, styles.threadAttentionDotRunning]}
+                        />
+                      ) : conversation.attentionState === 'unread' ? (
+                        <View
+                          testID={`conversation-attention-unread-${conversation.id}`}
+                          style={[styles.threadAttentionDot, styles.threadAttentionDotUnread]}
+                        />
+                      ) : null}
+                    </View>
                     <Text style={styles.threadMeta}>
                       {formatModeLabel(conversation.mode)} · {formatWorkspaceLabel(conversation)}
                     </Text>

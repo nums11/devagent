@@ -17,7 +17,8 @@ import {
   listConversations,
   listMessages,
   listRuns,
-  listWorkspaces
+  listWorkspaces,
+  markConversationViewed
 } from './db.js';
 import { createConversationSchema, publishProofMediaSchema, validateWorkspaceSchema, websocketClientMessageSchema } from './schemas.js';
 import { cancelRun, runConversationTurn } from './codexBridge.js';
@@ -483,6 +484,21 @@ app.get('/api/conversations/:conversationId', (req, res) => {
         error: error instanceof Error ? error.message : 'Failed to load conversation.'
       });
     });
+});
+
+app.post('/api/conversations/:conversationId/view', async (req, res) => {
+  try {
+    const conversation = await markConversationViewed(req.params.conversationId);
+    broadcast({
+      type: 'conversation.updated',
+      conversation
+    });
+    res.json({ conversation });
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Failed to mark conversation viewed.'
+    });
+  }
 });
 
 const server = http.createServer(app);

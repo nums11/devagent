@@ -206,12 +206,36 @@ video {
   box-shadow: 0 0 0 1px rgba(240, 140, 42, 0.22) inset;
 }
 
+.thread-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
 .thread-title,
 .workspace-card strong {
   display: block;
   font-size: 15px;
   font-weight: 600;
-  margin-bottom: 6px;
+  margin-bottom: 0;
+}
+
+.thread-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.thread-dot-running {
+  background: #4f88ff;
+}
+
+.thread-dot-unread {
+  background: #2dcf74;
 }
 
 .theme-option strong {
