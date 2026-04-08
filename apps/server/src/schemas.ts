@@ -35,6 +35,12 @@ export const websocketClientMessageSchema = z.discriminatedUnion('type', [
     attachments: z.array(imageAttachmentSchema).default([])
   }),
   z.object({
+    type: z.literal('conversation.run.steer'),
+    conversationId: z.string().min(1),
+    prompt: z.string(),
+    attachments: z.array(imageAttachmentSchema).default([])
+  }),
+  z.object({
     type: z.literal('conversation.run.cancel'),
     conversationId: z.string().min(1),
     runId: z.string().min(1)

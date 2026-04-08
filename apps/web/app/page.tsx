@@ -6,7 +6,6 @@ import {
   type ConnectionState,
   type Conversation,
   type Message,
-  type QueuedTurn,
   type RunRecord,
   type RuntimeConfig,
   type SelectedImage,
@@ -35,6 +34,8 @@ const MAX_SOCKET_RECONNECT_DELAY_MS = 10000;
 const WORKSPACE_SYNC_REFRESH_INTERVAL_MS = 3 * 60 * 1000;
 const COMPOSER_MIN_HEIGHT_PX = 24;
 const COMPOSER_MAX_HEIGHT_PX = 176;
+const COMMAND_OUTPUT_MAX_CHARS = 16000;
+const COMMAND_OUTPUT_TRUNCATED_PREFIX = '[output truncated]\n';
 
 type ActiveRun = {
   conversationId: string;
@@ -42,12 +43,40 @@ type ActiveRun = {
   startedAt: string;
 };
 
+type AppServerStreamEvent = {
+  method: string;
+  params?: Record<string, unknown>;
+};
+
+type LiveCommand = {
+  id: string;
+  runId: string;
+  command: string;
+  cwd: string;
+  output: string;
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  startedAt: string;
+  finishedAt: string | null;
+  truncated: boolean;
+  expanded: boolean;
+};
+
+type LiveRunState = {
+  runId: string;
+  agentText: string;
+  reasoningText: string;
+  commands: LiveCommand[];
+};
+
 type TimelineItem =
   | { key: string; type: 'message'; createdAt: string; message: Message }
   | { key: string; type: 'activity'; createdAt: string; activity: ActivityItem }
+  | { key: string; type: 'command'; createdAt: string; command: LiveCommand }
   | { key: string; type: 'run-marker'; createdAt: string; run: RunRecord };
 
-function buildTimeline(messages: Message[], activities: ActivityItem[], runs: RunRecord[]): TimelineItem[] {
+function buildTimeline(messages: Message[], activities: ActivityItem[], runs: RunRecord[], commands: LiveCommand[]): TimelineItem[] {
+  const runIdsWithCommands = new Set(commands.map((command) => command.runId));
+
   return [
     ...messages.map((message) => ({
       key: `message-${message.id}`,
@@ -61,8 +90,14 @@ function buildTimeline(messages: Message[], activities: ActivityItem[], runs: Ru
       createdAt: activity.createdAt,
       activity
     })),
+    ...commands.map((command) => ({
+      key: `command-${command.id}`,
+      type: 'command' as const,
+      createdAt: command.startedAt,
+      command
+    })),
     ...runs
-      .filter((run) => run.status !== 'running')
+      .filter((run) => run.status !== 'running' && !runIdsWithCommands.has(run.id))
       .map((run) => ({
         key: `run-${run.id}`,
         type: 'run-marker' as const,
@@ -70,6 +105,205 @@ function buildTimeline(messages: Message[], activities: ActivityItem[], runs: Ru
         run
       }))
   ].sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+}
+
+function createLiveRunState(runId: string): LiveRunState {
+  return {
+    runId,
+    agentText: '',
+    reasoningText: '',
+    commands: []
+  };
+}
+
+function isAppServerStreamEvent(value: unknown): value is AppServerStreamEvent {
+  return typeof value === 'object' && value !== null && 'method' in value && typeof (value as { method?: unknown }).method === 'string';
+}
+
+function upsertLiveCommand(commands: LiveCommand[], nextCommand: LiveCommand): LiveCommand[] {
+  const existingIndex = commands.findIndex((command) => command.id === nextCommand.id);
+  if (existingIndex === -1) {
+    return [...commands, nextCommand];
+  }
+
+  return commands.map((command, index) => (index === existingIndex ? nextCommand : command));
+}
+
+function retainCommandOutput(output: string): { output: string; truncated: boolean } {
+  const normalized = output.startsWith(COMMAND_OUTPUT_TRUNCATED_PREFIX)
+    ? output.slice(COMMAND_OUTPUT_TRUNCATED_PREFIX.length)
+    : output;
+
+  if (normalized.length <= COMMAND_OUTPUT_MAX_CHARS) {
+    return {
+      output: output.startsWith(COMMAND_OUTPUT_TRUNCATED_PREFIX)
+        ? `${COMMAND_OUTPUT_TRUNCATED_PREFIX}${normalized}`
+        : normalized,
+      truncated: output.startsWith(COMMAND_OUTPUT_TRUNCATED_PREFIX)
+    };
+  }
+
+  return {
+    output: `${COMMAND_OUTPUT_TRUNCATED_PREFIX}${normalized.slice(-COMMAND_OUTPUT_MAX_CHARS)}`,
+    truncated: true
+  };
+}
+
+function appendCommandOutput(currentOutput: string, delta: string): { output: string; truncated: boolean } {
+  const baseOutput = currentOutput.startsWith(COMMAND_OUTPUT_TRUNCATED_PREFIX)
+    ? currentOutput.slice(COMMAND_OUTPUT_TRUNCATED_PREFIX.length)
+    : currentOutput;
+  return retainCommandOutput(`${baseOutput}${delta}`);
+}
+
+function createPendingLiveCommand(input: {
+  id: string;
+  runId: string;
+  command?: string;
+  cwd?: string;
+  output?: string;
+  status?: LiveCommand['status'];
+  startedAt?: string;
+  finishedAt?: string | null;
+  expanded?: boolean;
+}): LiveCommand {
+  const retainedOutput = retainCommandOutput(input.output || '');
+  return {
+    id: input.id,
+    runId: input.runId,
+    command: input.command || 'Command',
+    cwd: input.cwd || '',
+    output: retainedOutput.output,
+    status: input.status || 'running',
+    startedAt: input.startedAt || new Date().toISOString(),
+    finishedAt: input.finishedAt || null,
+    truncated: retainedOutput.truncated,
+    expanded: input.expanded ?? true
+  };
+}
+
+function finalizeCommandsForRun(commands: LiveCommand[], runId: string, status: LiveCommand['status'], finishedAt: string): LiveCommand[] {
+  return commands.map((command) => {
+    if (command.runId !== runId || command.status !== 'running') {
+      return command;
+    }
+
+    return {
+      ...command,
+      status,
+      finishedAt,
+      expanded: false
+    };
+  });
+}
+
+function toggleCommandExpanded(commands: LiveCommand[], commandId: string): LiveCommand[] {
+  return commands.map((command) =>
+    command.id === commandId
+      ? {
+          ...command,
+          expanded: !command.expanded
+        }
+      : command
+  );
+}
+
+function updateLiveRunFromEvent(current: LiveRunState, streamEvent: AppServerStreamEvent): LiveRunState {
+  const params = streamEvent.params || {};
+
+  if (streamEvent.method === 'item/agentMessage/delta') {
+    return {
+      ...current,
+      agentText: current.agentText + String(params.delta || '')
+    };
+  }
+
+  if (streamEvent.method === 'item/reasoning/textDelta' || streamEvent.method === 'item/reasoning/summaryTextDelta') {
+    return {
+      ...current,
+      reasoningText: current.reasoningText + String(params.delta || '')
+    };
+  }
+
+  if (streamEvent.method === 'item/started' || streamEvent.method === 'item/completed') {
+    const item = params.item as Record<string, unknown> | undefined;
+    if (!item || typeof item.type !== 'string' || typeof item.id !== 'string') {
+      return current;
+    }
+
+    if (item.type === 'agentMessage') {
+      return {
+        ...current,
+        agentText: typeof item.text === 'string' && item.text ? item.text : current.agentText
+      };
+    }
+
+    if (item.type === 'reasoning') {
+      const content = Array.isArray(item.content) ? item.content.filter((part): part is string => typeof part === 'string').join('') : '';
+      return {
+        ...current,
+        reasoningText: content || current.reasoningText
+      };
+    }
+
+    if (item.type === 'commandExecution') {
+      const existingCommand = current.commands.find((command) => command.id === item.id);
+      const retainedOutput = retainCommandOutput(
+        typeof item.aggregatedOutput === 'string' ? item.aggregatedOutput : existingCommand?.output || ''
+      );
+      const commandState: LiveCommand = {
+        id: item.id,
+        runId: current.runId,
+        command: typeof item.command === 'string' ? item.command : existingCommand?.command || 'Command',
+        cwd: typeof item.cwd === 'string' ? item.cwd : existingCommand?.cwd || '',
+        output: retainedOutput.output,
+        status:
+          streamEvent.method === 'item/completed'
+            ? item.status === 'failed'
+              ? 'failed'
+              : item.status === 'cancelled'
+                ? 'cancelled'
+                : 'completed'
+            : 'running',
+        startedAt: existingCommand?.startedAt || new Date().toISOString(),
+        finishedAt: streamEvent.method === 'item/completed' ? new Date().toISOString() : existingCommand?.finishedAt || null,
+        truncated: retainedOutput.truncated,
+        expanded: streamEvent.method === 'item/completed' ? false : existingCommand?.expanded ?? true
+      };
+      return {
+        ...current,
+        commands: upsertLiveCommand(current.commands, commandState)
+      };
+    }
+
+    return current;
+  }
+
+  if (streamEvent.method === 'item/commandExecution/outputDelta' || streamEvent.method === 'command/exec/outputDelta') {
+    const itemId = typeof params.itemId === 'string' ? params.itemId : '';
+    const delta = typeof params.delta === 'string' ? params.delta : '';
+    if (!itemId) {
+      return current;
+    }
+
+    const existing =
+      current.commands.find((command) => command.id === itemId) ||
+      createPendingLiveCommand({
+        id: itemId,
+        runId: current.runId
+      });
+    const retainedOutput = appendCommandOutput(existing.output, delta);
+    return {
+      ...current,
+      commands: upsertLiveCommand(current.commands, {
+        ...existing,
+        output: retainedOutput.output,
+        truncated: retainedOutput.truncated
+      })
+    };
+  }
+
+  return current;
 }
 
 function syncActiveRunFromRuns(
@@ -163,11 +397,11 @@ export default function Page() {
   const [messages, setMessages] = React.useState<Message[]>([]);
   const [activities, setActivities] = React.useState<ActivityItem[]>([]);
   const [runs, setRuns] = React.useState<RunRecord[]>([]);
+  const [liveRuns, setLiveRuns] = React.useState<Record<string, LiveRunState>>({});
   const [runtime, setRuntime] = React.useState<RuntimeConfig | null>(null);
   const [activeConversationId, setActiveConversationId] = React.useState<string | null>(null);
   const [draft, setDraft] = React.useState('');
   const [selectedImages, setSelectedImages] = React.useState<SelectedImage[]>([]);
-  const [queuedTurns, setQueuedTurns] = React.useState<Record<string, QueuedTurn>>({});
   const [activeRun, setActiveRun] = React.useState<ActiveRun | null>(null);
   const [status, setStatus] = React.useState('Connecting to Dev Agent...');
   const [connectionState, setConnectionState] = React.useState<ConnectionState>('connecting');
@@ -190,8 +424,6 @@ export default function Page() {
   const activeConversationIdRef = React.useRef<string | null>(null);
   const activeRunRef = React.useRef<ActiveRun | null>(null);
   const viewModeRef = React.useRef<ViewMode>('chat');
-  const queuedTurnsRef = React.useRef<Record<string, QueuedTurn>>({});
-  const queuedTurnDispatchingRef = React.useRef<Record<string, boolean>>({});
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
   const composerTextareaRef = React.useRef<HTMLTextAreaElement | null>(null);
   const messagesEndRef = React.useRef<HTMLDivElement | null>(null);
@@ -204,11 +436,18 @@ export default function Page() {
     () => workspaces.find((workspace) => workspace.id === activeConversation?.workspaceId) || null,
     [activeConversation?.workspaceId, workspaces]
   );
-  const queuedTurn = activeConversationId ? queuedTurns[activeConversationId] || null : null;
+  const activeLiveRun = activeConversationId ? liveRuns[activeConversationId] || null : null;
+  const activeConversationCommands = React.useMemo(
+    () => (activeConversationId ? liveRuns[activeConversationId]?.commands || [] : []),
+    [activeConversationId, liveRuns]
+  );
   const activeConversationIsRunning = activeRun?.conversationId === activeConversationId;
   const composerHasContent = draft.trim().length > 0 || selectedImages.length > 0;
   const activeWorkspaceNeedsSync = shouldOfferWorkspaceSync(activeWorkspace);
-  const timelineItems = React.useMemo(() => buildTimeline(messages, activities, runs), [activities, messages, runs]);
+  const timelineItems = React.useMemo(
+    () => buildTimeline(messages, activities.filter((activity) => activity.kind !== 'command'), runs, activeConversationCommands),
+    [activities, activeConversationCommands, messages, runs]
+  );
   const topBarStatus = React.useMemo(() => {
     if (connectionState === 'connecting') {
       return 'Connecting to Dev Agent...';
@@ -256,10 +495,6 @@ export default function Page() {
   }, [viewMode]);
 
   React.useEffect(() => {
-    queuedTurnsRef.current = queuedTurns;
-  }, [queuedTurns]);
-
-  React.useEffect(() => {
     const storedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
     if (storedTheme === 'dark' || storedTheme === 'light') {
       setThemeMode(storedTheme);
@@ -272,7 +507,7 @@ export default function Page() {
 
   React.useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [timelineItems, activeConversationIsRunning]);
+  }, [timelineItems, activeConversationIsRunning, activeLiveRun]);
 
   React.useEffect(() => {
     const node = composerTextareaRef.current;
@@ -488,6 +723,15 @@ export default function Page() {
       }
 
       if (event.type === 'conversation.run.started') {
+        setLiveRuns((current) => ({
+          ...current,
+          [event.conversationId]: {
+            ...(current[event.conversationId] || createLiveRunState(event.runId)),
+            runId: event.runId,
+            agentText: '',
+            reasoningText: ''
+          }
+        }));
         setActiveRun({
           conversationId: event.conversationId,
           runId: event.runId,
@@ -519,6 +763,22 @@ export default function Page() {
         return;
       }
 
+      if (event.type === 'conversation.run.event') {
+        if (!isAppServerStreamEvent(event.event)) {
+          return;
+        }
+        const streamEvent = event.event;
+
+        setLiveRuns((current) => {
+          const existing = current[event.conversationId] || createLiveRunState(event.runId);
+          return {
+            ...current,
+            [event.conversationId]: updateLiveRunFromEvent(existing, streamEvent)
+          };
+        });
+        return;
+      }
+
       if (event.type === 'conversation.run.activity') {
         if (event.conversationId === activeConversationIdRef.current) {
           setActivities((current) => upsertActivity(current, event.activity));
@@ -527,31 +787,49 @@ export default function Page() {
       }
 
       if (event.type === 'conversation.run.completed') {
+        const finishedAt = new Date().toISOString();
         setRuns((current) =>
           current.map((run) =>
             run.id === event.runId
               ? {
                   ...run,
                   status: 'completed',
-                  completedAt: new Date().toISOString(),
+                  completedAt: finishedAt,
                   finalResponse: event.finalResponse
                 }
               : run
           )
         );
+        setLiveRuns((current) => {
+          const existing = current[event.conversationId];
+          if (!existing) {
+            return current;
+          }
+
+          return {
+            ...current,
+            [event.conversationId]: {
+              ...existing,
+              agentText: '',
+              reasoningText: '',
+              commands: finalizeCommandsForRun(existing.commands, event.runId, 'completed', finishedAt)
+            }
+          };
+        });
         if (event.conversationId === activeConversationIdRef.current) {
-          loadConversationDetail(event.conversationId).catch(() => {
-            setMessages((current) => [
-              ...current,
-              {
-                id: event.runId,
-                role: 'assistant',
-                content: event.finalResponse,
-                attachments: [],
-                createdAt: new Date().toISOString()
-              }
-            ]);
-          });
+          loadConversationDetail(event.conversationId)
+            .catch(() => {
+              setMessages((current) => [
+                ...current,
+                {
+                  id: event.runId,
+                  role: 'assistant',
+                  content: event.finalResponse,
+                  attachments: [],
+                  createdAt: new Date().toISOString()
+                }
+              ]);
+            });
           setStatus('Codex turn completed');
         }
 
@@ -562,13 +840,30 @@ export default function Page() {
       }
 
       if (event.type === 'conversation.run.cancelled') {
+        const finishedAt = new Date().toISOString();
+        setLiveRuns((current) => {
+          const existing = current[event.conversationId];
+          if (!existing) {
+            return current;
+          }
+
+          return {
+            ...current,
+            [event.conversationId]: {
+              ...existing,
+              agentText: '',
+              reasoningText: '',
+              commands: finalizeCommandsForRun(existing.commands, event.runId, 'cancelled', finishedAt)
+            }
+          };
+        });
         setRuns((current) =>
           current.map((run) =>
             run.id === event.runId
               ? {
                   ...run,
                   status: 'failed',
-                  completedAt: new Date().toISOString()
+                  completedAt: finishedAt
                 }
               : run
           )
@@ -584,6 +879,27 @@ export default function Page() {
       }
 
       if (event.type === 'conversation.run.failed') {
+        const finishedAt = new Date().toISOString();
+        if (event.conversationId && event.runId) {
+          const conversationId = event.conversationId;
+          const runId = event.runId;
+          setLiveRuns((current) => {
+            const existing = current[conversationId];
+            if (!existing) {
+              return current;
+            }
+
+            return {
+              ...current,
+              [conversationId]: {
+                ...existing,
+                agentText: '',
+                reasoningText: '',
+                commands: finalizeCommandsForRun(existing.commands, runId, 'failed', finishedAt)
+              }
+            };
+          });
+        }
         if (event.runId) {
           setRuns((current) =>
             current.map((run) =>
@@ -591,7 +907,7 @@ export default function Page() {
                 ? {
                     ...run,
                     status: 'failed',
-                    completedAt: new Date().toISOString()
+                    completedAt: finishedAt
                   }
                 : run
             )
@@ -839,38 +1155,32 @@ export default function Page() {
     loadWorkspaces
   ]);
 
-  const dispatchRun = React.useCallback(async (input: {
-    conversationId: string;
-    prompt: string;
-    selectedImages: SelectedImage[];
-  }) => {
-    if (!socketRef.current) {
-      throw new Error('Codex connection is not ready.');
+  const uploadSelectedImages = React.useCallback(async (images: SelectedImage[]) => {
+    if (!images.length) {
+      return [];
     }
 
-    const prompt = input.prompt.trim();
-    let uploadedAttachments: UploadedImageAttachment[] = [];
-    if (input.selectedImages.length) {
-      setStatus(input.selectedImages.length === 1 ? 'Uploading image...' : `Uploading ${input.selectedImages.length} images...`);
-      uploadedAttachments = await Promise.all(
-        input.selectedImages.map(async (image) => {
-          const form = new FormData();
-          form.append('image', image.file, image.fileName);
+    setStatus(images.length === 1 ? 'Uploading image...' : `Uploading ${images.length} images...`);
+    return Promise.all(
+      images.map(async (image) => {
+        const form = new FormData();
+        form.append('image', image.file, image.fileName);
 
-          const response = await fetch(`${apiUrl}/api/uploads/image`, {
-            method: 'POST',
-            body: form
-          });
-          const payload = await readResponsePayload<{ attachment?: UploadedImageAttachment; error?: string }>(response);
-          if (!response.ok || !payload.attachment) {
-            throw new Error(payload.error || 'Failed to upload image.');
-          }
+        const response = await fetch(`${apiUrl}/api/uploads/image`, {
+          method: 'POST',
+          body: form
+        });
+        const payload = await readResponsePayload<{ attachment?: UploadedImageAttachment; error?: string }>(response);
+        if (!response.ok || !payload.attachment) {
+          throw new Error(payload.error || 'Failed to upload image.');
+        }
 
-          return payload.attachment;
-        })
-      );
-    }
+        return payload.attachment;
+      })
+    );
+  }, [apiUrl]);
 
+  const appendOptimisticUserMessage = React.useCallback((prompt: string, images: SelectedImage[]) => {
     const createdAt = new Date().toISOString();
     setMessages((current) => [
       ...current,
@@ -878,7 +1188,7 @@ export default function Page() {
         id: `local-${Date.now()}`,
         role: 'user',
         content: deriveUserMessageContent(prompt),
-        attachments: input.selectedImages.map((image) => ({
+        attachments: images.map((image) => ({
           id: image.id,
           type: 'image',
           fileName: image.fileName,
@@ -889,7 +1199,32 @@ export default function Page() {
         createdAt
       }
     ]);
+  }, []);
+
+  const dispatchRun = React.useCallback(async (input: {
+    conversationId: string;
+    prompt: string;
+    selectedImages: SelectedImage[];
+  }) => {
+    if (!socketRef.current) {
+      throw new Error('Codex connection is not ready.');
+    }
+
+    const prompt = input.prompt.trim();
+    const uploadedAttachments = await uploadSelectedImages(input.selectedImages);
+    appendOptimisticUserMessage(prompt, input.selectedImages);
     setThinkingFrame(0);
+    setLiveRuns((current) => ({
+      ...current,
+      [input.conversationId]: {
+        ...(current[input.conversationId] ||
+          createLiveRunState(
+            activeRunRef.current?.conversationId === input.conversationId ? activeRunRef.current.runId : `pending-${Date.now()}`
+          )),
+        agentText: '',
+        reasoningText: ''
+      }
+    }));
 
     socketRef.current.send(
       JSON.stringify({
@@ -899,65 +1234,31 @@ export default function Page() {
         attachments: uploadedAttachments
       })
     );
-  }, [apiUrl]);
+  }, [appendOptimisticUserMessage, uploadSelectedImages]);
 
-  const clearQueuedTurn = React.useCallback((conversationId: string) => {
-    setQueuedTurns((current) => {
-      if (!current[conversationId]) {
-        return current;
-      }
-
-      const next = { ...current };
-      delete next[conversationId];
-      return next;
-    });
-  }, []);
-
-  const dispatchQueuedTurn = React.useCallback(async (conversationId: string, nextQueuedTurn: QueuedTurn) => {
-    const prompt = nextQueuedTurn.prompt.trim();
-    if (!prompt && nextQueuedTurn.selectedImages.length === 0) {
-      return;
+  const dispatchSteer = React.useCallback(async (input: {
+    conversationId: string;
+    prompt: string;
+    selectedImages: SelectedImage[];
+  }) => {
+    if (!socketRef.current) {
+      throw new Error('Codex connection is not ready.');
     }
 
-    if (queuedTurnDispatchingRef.current[conversationId]) {
-      return;
-    }
+    const prompt = input.prompt.trim();
+    const uploadedAttachments = await uploadSelectedImages(input.selectedImages);
+    appendOptimisticUserMessage(prompt, input.selectedImages);
+    setStatus('Steering active turn...');
 
-    queuedTurnDispatchingRef.current[conversationId] = true;
-    try {
-      await dispatchRun({
-        conversationId,
+    socketRef.current.send(
+      JSON.stringify({
+        type: 'conversation.run.steer',
+        conversationId: input.conversationId,
         prompt,
-        selectedImages: nextQueuedTurn.selectedImages
-      });
-      clearQueuedTurn(conversationId);
-      if (conversationId === activeConversationIdRef.current) {
-        setStatus('Queued next turn submitted.');
-      }
-    } finally {
-      delete queuedTurnDispatchingRef.current[conversationId];
-    }
-  }, [clearQueuedTurn, dispatchRun]);
-
-  React.useEffect(() => {
-    if (activeRun) {
-      return;
-    }
-
-    const nextQueuedEntry = Object.entries(queuedTurns).find(([, item]) => item.prompt.trim().length > 0 || item.selectedImages.length > 0);
-    if (!nextQueuedEntry) {
-      return;
-    }
-
-    const [conversationId, nextQueuedTurn] = nextQueuedEntry;
-    if (queuedTurnDispatchingRef.current[conversationId]) {
-      return;
-    }
-
-    dispatchQueuedTurn(conversationId, nextQueuedTurn).catch((error) => {
-      setStatus(error instanceof Error ? error.message : 'Failed to submit queued next turn.');
-    });
-  }, [activeRun, dispatchQueuedTurn, queuedTurns]);
+        attachments: uploadedAttachments
+      })
+    );
+  }, [appendOptimisticUserMessage, uploadSelectedImages]);
 
   const sendMessage = React.useCallback(async () => {
     if ((!draft.trim() && selectedImages.length === 0) || !activeConversationId) {
@@ -965,18 +1266,13 @@ export default function Page() {
     }
 
     if (activeRunRef.current?.conversationId === activeConversationId) {
-      const nextQueuedTurn = {
-        prompt: draft.trim(),
-        selectedImages: [...selectedImages]
-      };
-      setStatus('Queueing next turn...');
-      setQueuedTurns((current) => ({
-        ...current,
-        [activeConversationId]: nextQueuedTurn
-      }));
+      await dispatchSteer({
+        conversationId: activeConversationId,
+        prompt: draft,
+        selectedImages
+      });
       setDraft('');
       setSelectedImages([]);
-      setStatus('Next turn queued.');
       return;
     }
 
@@ -991,7 +1287,7 @@ export default function Page() {
     });
     setDraft('');
     setSelectedImages([]);
-  }, [activeConversationId, dispatchRun, draft, selectedImages]);
+  }, [activeConversationId, dispatchRun, dispatchSteer, draft, selectedImages]);
 
   const onComposerKeyDown = React.useCallback((event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== 'Enter' || (!event.metaKey && !event.ctrlKey)) {
@@ -1007,11 +1303,6 @@ export default function Page() {
       return;
     }
 
-    const hadQueuedTurn = Boolean(activeConversationId && queuedTurnsRef.current[activeConversationId]);
-    if (activeConversationId) {
-      clearQueuedTurn(activeConversationId);
-    }
-
     socketRef.current.send(
       JSON.stringify({
         type: 'conversation.run.cancel',
@@ -1019,8 +1310,8 @@ export default function Page() {
         runId: activeRun.runId
       })
     );
-    setStatus(hadQueuedTurn ? 'Stopping Codex turn and clearing queued next turn...' : 'Stopping Codex turn...');
-  }, [activeConversationId, activeRun, clearQueuedTurn]);
+    setStatus('Stopping Codex turn...');
+  }, [activeConversationId, activeRun]);
 
   const onPickImages = React.useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files || []).filter((file) => file.type.startsWith('image/'));
@@ -1045,13 +1336,26 @@ export default function Page() {
     setSelectedImages((current) => current.filter((image) => image.id !== imageId));
   }, []);
 
-  const queuedTurnPreview = React.useMemo(() => {
-    if (!queuedTurn) {
-      return '';
+  const toggleCommandTranscript = React.useCallback((commandId: string) => {
+    if (!activeConversationId) {
+      return;
     }
 
-    return queuedTurn.prompt.trim() || 'Images only';
-  }, [queuedTurn]);
+    setLiveRuns((current) => {
+      const existing = current[activeConversationId];
+      if (!existing) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [activeConversationId]: {
+          ...existing,
+          commands: toggleCommandExpanded(existing.commands, commandId)
+        }
+      };
+    });
+  }, [activeConversationId]);
 
   const thinkingLabel = React.useMemo(() => {
     const phase = thinkingFrame % 3;
@@ -1232,34 +1536,58 @@ export default function Page() {
                       );
                     }
 
-                    const activity = item.activity;
-                    if (activity.kind === 'command') {
-                      const outputPreview = typeof activity.metadata.outputPreview === 'string' ? activity.metadata.outputPreview : null;
+                    if (item.type === 'command') {
+                      const command = item.command;
+                      const startedAtMs = new Date(command.startedAt).getTime();
+                      const endedAtMs = command.finishedAt ? new Date(command.finishedAt).getTime() : runClock;
+                      const elapsedSeconds = Math.max(1, Math.floor((endedAtMs - startedAtMs) / 1000));
+                      const summaryLabel =
+                        command.status === 'running'
+                          ? `Running command for ${formatElapsedLabel(elapsedSeconds)}`
+                          : `Worked for ${formatElapsedLabel(elapsedSeconds)}`;
+
                       return (
-                        <article key={item.key} className="command-card">
-                          <div className="command-card-header">
-                            <div>
-                              <h3>{activity.title}</h3>
-                              <p>{activity.status === 'running' ? 'Running now' : 'Command finished'}</p>
-                            </div>
-                            <span className={`status-pill status-${activity.status}`}>{activity.status}</span>
-                          </div>
-                          <div className="command-card-body">
-                            <div>
-                              <span className="command-label">Shell</span>
-                              <code>{activity.detail || activity.title}</code>
-                            </div>
-                            {outputPreview ? (
-                              <div>
-                                <span className="command-label">Output</span>
-                                <pre>{outputPreview}</pre>
+                        <div
+                          key={item.key}
+                          className={`command-transcript ${command.expanded ? 'is-expanded' : ''} status-${command.status}`}
+                        >
+                          <button
+                            className="command-summary"
+                            type="button"
+                            onClick={() => toggleCommandTranscript(command.id)}
+                            aria-expanded={command.expanded}
+                          >
+                            <span />
+                            <p>{summaryLabel}</p>
+                            <strong aria-hidden="true">{command.expanded ? '⌄' : '›'}</strong>
+                          </button>
+
+                          {command.expanded ? (
+                            <article className="command-card">
+                              <div className="command-card-header">
+                                <div>
+                                  <h3>{command.command}</h3>
+                                  <p>{command.cwd || 'Shell command'}</p>
+                                </div>
+                                <span className={`status-pill status-${command.status}`}>{command.status}</span>
                               </div>
-                            ) : null}
-                          </div>
-                        </article>
+                              <div className="command-card-body">
+                                <div>
+                                  <span className="command-label">Shell</span>
+                                  <code>{command.command}</code>
+                                </div>
+                                <div>
+                                  <span className="command-label">Output</span>
+                                  <pre className="command-output">{command.output || 'Waiting for output...'}</pre>
+                                </div>
+                              </div>
+                            </article>
+                          ) : null}
+                        </div>
                       );
                     }
 
+                    const activity = item.activity;
                     return (
                       <article key={item.key} className={`activity-card status-${activity.status}`}>
                         <span className="activity-kind">{activity.kind.replace('_', ' ')}</span>
@@ -1274,6 +1602,25 @@ export default function Page() {
                     <p>Ask me to implement anything.</p>
                   </div>
                 )}
+
+                {activeConversationIsRunning && activeLiveRun?.reasoningText ? (
+                  <article className="activity-card status-running">
+                    <span className="activity-kind">reasoning</span>
+                    <h3>Codex is working through the turn</h3>
+                    <p>{activeLiveRun.reasoningText}</p>
+                  </article>
+                ) : null}
+
+                {activeConversationIsRunning && activeLiveRun?.agentText ? (
+                  <article className="message-row is-assistant">
+                    <div className="message-card">
+                      <div className="message-card-header">
+                        <span className="message-role">Codex</span>
+                      </div>
+                      <p className="message-text">{activeLiveRun.agentText}</p>
+                    </div>
+                  </article>
+                ) : null}
 
                 {activeConversationIsRunning && activeRun ? (
                   <div className="run-marker is-live">
@@ -1302,21 +1649,6 @@ export default function Page() {
 
             <section className="composer-dock">
               <div className="composer-shell">
-                {queuedTurn ? (
-                  <div className="queued-card">
-                    <div className="queued-card-header">
-                      <span>Queued next turn</span>
-                      <button onClick={() => activeConversationId && clearQueuedTurn(activeConversationId)}>Clear</button>
-                    </div>
-                    <p>{queuedTurnPreview}</p>
-                    {queuedTurn.selectedImages.length ? (
-                      <small>
-                        {queuedTurn.selectedImages.length} image{queuedTurn.selectedImages.length === 1 ? '' : 's'} attached
-                      </small>
-                    ) : null}
-                  </div>
-                ) : null}
-
                 {selectedImages.length ? (
                   <div className="selected-images">
                     {selectedImages.map((image) => (
@@ -1336,7 +1668,7 @@ export default function Page() {
                   rows={1}
                   onChange={(event) => setDraft(event.target.value)}
                   onKeyDown={onComposerKeyDown}
-                  placeholder={activeConversationIsRunning ? 'Queue the next turn while Codex is working' : 'Ask for follow-up changes'}
+                  placeholder={activeConversationIsRunning ? 'Steer the current turn while Codex is working' : 'Ask for follow-up changes'}
                 />
 
                 <div className="composer-footer">

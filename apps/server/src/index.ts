@@ -21,7 +21,7 @@ import {
   markConversationViewed
 } from './db.js';
 import { createConversationSchema, publishProofMediaSchema, validateWorkspaceSchema, websocketClientMessageSchema } from './schemas.js';
-import { cancelRun, runConversationTurn } from './codexBridge.js';
+import { cancelRun, runConversationTurn, steerConversationTurn } from './codexBridge.js';
 import { refreshAllWorkspaceSyncStatuses, syncWorkspaceFromMain } from './workspaceSync.js';
 import { getSupabaseAdmin } from './supabaseAdmin.js';
 import type { RuntimeConfig, SocketServerEvent } from './types.js';
@@ -566,13 +566,42 @@ wss.on('connection', (socket) => {
     }
 
     if (parsedMessage.data.type === 'conversation.run.cancel') {
-      const cancelled = cancelRun(parsedMessage.data.runId);
+      const cancelled = await cancelRun(parsedMessage.data.runId);
       if (!cancelled) {
         socket.send(JSON.stringify({
           type: 'conversation.run.failed',
           conversationId: parsedMessage.data.conversationId,
           runId: parsedMessage.data.runId,
           error: 'Run is no longer active.'
+        }));
+      }
+      return;
+    }
+
+    if (parsedMessage.data.type === 'conversation.run.steer') {
+      const trimmedPrompt = parsedMessage.data.prompt.trim();
+      if (!trimmedPrompt && parsedMessage.data.attachments.length === 0) {
+        socket.send(JSON.stringify({
+          type: 'conversation.run.failed',
+          conversationId: parsedMessage.data.conversationId,
+          runId: null,
+          error: 'Add a message or at least one image.'
+        }));
+        return;
+      }
+
+      try {
+        await steerConversationTurn(
+          parsedMessage.data.conversationId,
+          parsedMessage.data.prompt,
+          parsedMessage.data.attachments
+        );
+      } catch (error) {
+        socket.send(JSON.stringify({
+          type: 'conversation.run.failed',
+          conversationId: parsedMessage.data.conversationId,
+          runId: null,
+          error: error instanceof Error ? error.message : 'Failed to steer the active turn.'
         }));
       }
     }

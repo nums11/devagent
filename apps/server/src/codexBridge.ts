@@ -1,9 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Codex, type Input, type ThreadEvent } from '@openai/codex-sdk';
-import { deriveActivityDrafts } from './activity.js';
 import { config } from './config.js';
+import { getCodexAppServerClient, type AppServerNotification } from './codexAppServer.js';
 import {
   addMessage,
   completeRun,
@@ -27,10 +26,38 @@ type ImageAttachment = {
   mimeType?: string | null;
 };
 
+type AppServerUserInput =
+  | { type: 'text'; text: string; text_elements: [] }
+  | { type: 'localImage'; path: string };
+
+type SessionOutcome =
+  | { status: 'completed'; finalResponse: string }
+  | { status: 'interrupted'; reason: string }
+  | { status: 'failed'; error: string };
+
+type ActiveTurnSession = {
+  conversationId: string;
+  runId: string;
+  threadId: string;
+  turnId: string | null;
+  emit: Emit;
+  sequence: number;
+  finalResponse: string;
+  commandState: Map<string, { command: string; cwd: string; output: string; status: 'running' | 'completed' | 'failed' }>;
+  resolve: (outcome: SessionOutcome) => void;
+  reject: (error: Error) => void;
+  completion: Promise<SessionOutcome>;
+  settled: boolean;
+};
+
 const UNTITLED_CONVERSATION = 'New Codex Chat';
-const activeRunControllers = new Map<string, AbortController>();
 const codexBridgeDir = path.dirname(fileURLToPath(import.meta.url));
 const devAgentRoot = path.resolve(codexBridgeDir, '../../..');
+const appServer = getCodexAppServerClient();
+const activeSessionsByRunId = new Map<string, ActiveTurnSession>();
+const activeSessionsByConversationId = new Map<string, ActiveTurnSession>();
+const activeSessionsByThreadId = new Map<string, ActiveTurnSession>();
+const activeSessionsByTurnId = new Map<string, ActiveTurnSession>();
 
 function ensureWorkspacePath(workspacePath: string | null): string | undefined {
   if (!workspacePath) {
@@ -142,7 +169,7 @@ function buildRunInput(
   prompt: string,
   attachments: ImageAttachment[],
   workspaceContext: string | null
-): Input {
+): AppServerUserInput[] {
   const trimmedPrompt = prompt.trim();
   const textSections = [
     buildConversationCapabilityBlock(conversationId),
@@ -155,26 +182,431 @@ function buildRunInput(
   ].filter(Boolean);
   const runText = textSections.join('\n\n').trim();
 
-  if (!attachments.length) {
-    return runText;
-  }
-
-  const items: Extract<Input, unknown[]> = [];
+  const items: AppServerUserInput[] = [];
   if (runText) {
     items.push({
       type: 'text',
-      text: runText
+      text: runText,
+      text_elements: []
     });
   }
 
   for (const attachment of attachments) {
     items.push({
-      type: 'local_image',
+      type: 'localImage',
       path: attachment.uploadedPath
     });
   }
 
   return items;
+}
+
+function registerSession(session: ActiveTurnSession) {
+  activeSessionsByRunId.set(session.runId, session);
+  activeSessionsByConversationId.set(session.conversationId, session);
+  activeSessionsByThreadId.set(session.threadId, session);
+  if (session.turnId) {
+    activeSessionsByTurnId.set(session.turnId, session);
+  }
+}
+
+function unregisterSession(session: ActiveTurnSession) {
+  activeSessionsByRunId.delete(session.runId);
+  const activeConversationSession = activeSessionsByConversationId.get(session.conversationId);
+  if (activeConversationSession?.runId === session.runId) {
+    activeSessionsByConversationId.delete(session.conversationId);
+  }
+  const activeThreadSession = activeSessionsByThreadId.get(session.threadId);
+  if (activeThreadSession?.runId === session.runId) {
+    activeSessionsByThreadId.delete(session.threadId);
+  }
+  if (session.turnId) {
+    const activeTurnSession = activeSessionsByTurnId.get(session.turnId);
+    if (activeTurnSession?.runId === session.runId) {
+      activeSessionsByTurnId.delete(session.turnId);
+    }
+  }
+}
+
+function setSessionTurnId(session: ActiveTurnSession, turnId: string | null) {
+  if (session.turnId) {
+    const activeTurnSession = activeSessionsByTurnId.get(session.turnId);
+    if (activeTurnSession?.runId === session.runId) {
+      activeSessionsByTurnId.delete(session.turnId);
+    }
+  }
+
+  session.turnId = turnId;
+  if (turnId) {
+    activeSessionsByTurnId.set(turnId, session);
+  }
+}
+
+function getSessionForNotification(notification: AppServerNotification): ActiveTurnSession | null {
+  const params = notification.params as
+    | { threadId?: string; turnId?: string }
+    | undefined;
+  const turnId = typeof params?.turnId === 'string' ? params.turnId : null;
+  if (turnId) {
+    const sessionByTurn = activeSessionsByTurnId.get(turnId);
+    if (sessionByTurn) {
+      return sessionByTurn;
+    }
+  }
+
+  const threadId = typeof params?.threadId === 'string' ? params.threadId : null;
+  if (threadId) {
+    return activeSessionsByThreadId.get(threadId) || null;
+  }
+
+  return null;
+}
+
+function createSession(input: {
+  conversationId: string;
+  runId: string;
+  threadId: string;
+  emit: Emit;
+}): ActiveTurnSession {
+  let resolve!: (outcome: SessionOutcome) => void;
+  let reject!: (error: Error) => void;
+  const completion = new Promise<SessionOutcome>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+
+  return {
+    conversationId: input.conversationId,
+    runId: input.runId,
+    threadId: input.threadId,
+    turnId: null,
+    emit: input.emit,
+    sequence: 0,
+    finalResponse: '',
+    commandState: new Map(),
+    resolve,
+    reject,
+    completion,
+    settled: false
+  };
+}
+
+function finishSession(session: ActiveTurnSession, outcome: SessionOutcome) {
+  if (session.settled) {
+    return;
+  }
+
+  session.settled = true;
+  unregisterSession(session);
+  session.resolve(outcome);
+}
+
+async function emitActivityFromNotification(
+  session: ActiveTurnSession,
+  notification: AppServerNotification
+): Promise<void> {
+  if (notification.method === 'item/started' || notification.method === 'item/completed') {
+    const itemNotification = notification as Extract<AppServerNotification, { method: 'item/started' | 'item/completed' }>;
+    const item = itemNotification.params.item;
+
+    if (item.type === 'commandExecution') {
+      const previous = session.commandState.get(item.id) || {
+        command: typeof item.command === 'string' ? item.command : 'Command',
+        cwd: typeof item.cwd === 'string' ? item.cwd : '',
+        output: typeof item.aggregatedOutput === 'string' ? item.aggregatedOutput : '',
+        status: 'running' as const
+      };
+      const nextState: { command: string; cwd: string; output: string; status: 'running' | 'completed' | 'failed' } = {
+        command: typeof item.command === 'string' ? item.command : previous.command,
+        cwd: typeof item.cwd === 'string' ? item.cwd : previous.cwd,
+        output: typeof item.aggregatedOutput === 'string' ? item.aggregatedOutput : previous.output,
+        status:
+          notification.method === 'item/completed'
+            ? item.status === 'failed'
+              ? 'failed'
+              : 'completed'
+            : 'running'
+      };
+      session.commandState.set(item.id, nextState);
+
+      const activity = await upsertActivity({
+        runId: session.runId,
+        conversationId: session.conversationId,
+        sourceKey: `command:${item.id}`,
+        kind: 'command',
+        title: nextState.command,
+        detail: nextState.command,
+        status: nextState.status,
+        metadata: {
+          cwd: nextState.cwd,
+          outputPreview: nextState.output.slice(-4000)
+        }
+      });
+
+      session.emit({
+        type: 'conversation.run.activity',
+        conversationId: session.conversationId,
+        runId: session.runId,
+        activity
+      });
+      return;
+    }
+
+    if (item.type === 'mcpToolCall' || item.type === 'dynamicToolCall') {
+      const toolName =
+        item.type === 'mcpToolCall'
+          ? `${String(item.server)}:${String(item.tool)}`
+          : String(item.tool);
+      const activity = await upsertActivity({
+        runId: session.runId,
+        conversationId: session.conversationId,
+        sourceKey: `${item.type}:${item.id}`,
+        kind: 'tool_call',
+        title: toolName,
+        detail: toolName,
+        status: notification.method === 'item/completed' ? 'completed' : 'running',
+        metadata: {}
+      });
+
+      session.emit({
+        type: 'conversation.run.activity',
+        conversationId: session.conversationId,
+        runId: session.runId,
+        activity
+      });
+      return;
+    }
+
+    if (item.type === 'fileChange') {
+      const activity = await upsertActivity({
+        runId: session.runId,
+        conversationId: session.conversationId,
+        sourceKey: `file-change:${item.id}`,
+        kind: 'file_change',
+        title: 'Updated files',
+        detail: Array.isArray(item.changes) ? `${item.changes.length} file change${item.changes.length === 1 ? '' : 's'}` : null,
+        status: notification.method === 'item/completed' ? 'completed' : 'running',
+        metadata: {}
+      });
+
+      session.emit({
+        type: 'conversation.run.activity',
+        conversationId: session.conversationId,
+        runId: session.runId,
+        activity
+      });
+      return;
+    }
+  }
+
+  if (notification.method === 'error') {
+    const errorNotification = notification as Extract<AppServerNotification, { method: 'error' }>;
+    const activity = await upsertActivity({
+      runId: session.runId,
+      conversationId: session.conversationId,
+      sourceKey: `bridge-error:${session.runId}`,
+      kind: 'error',
+      title: 'Bridge error',
+      detail: errorNotification.params.error.message,
+      status: 'failed',
+      metadata: {
+        message: errorNotification.params.error.message
+      }
+    });
+
+    session.emit({
+      type: 'conversation.run.activity',
+      conversationId: session.conversationId,
+      runId: session.runId,
+      activity
+    });
+  }
+}
+
+async function handleNotification(notification: AppServerNotification): Promise<void> {
+  const session = getSessionForNotification(notification);
+  if (!session) {
+    return;
+  }
+
+  session.sequence += 1;
+  await recordRunEvent({
+    runId: session.runId,
+    conversationId: session.conversationId,
+    sequence: session.sequence,
+    eventType: notification.method,
+    payload: notification
+  });
+
+  session.emit({
+    type: 'conversation.run.event',
+    conversationId: session.conversationId,
+    runId: session.runId,
+    event: notification
+  });
+
+  await emitActivityFromNotification(session, notification);
+
+  if (notification.method === 'turn/started') {
+    const turnStarted = notification as Extract<AppServerNotification, { method: 'turn/started' }>;
+    setSessionTurnId(session, turnStarted.params.turn.id);
+    return;
+  }
+
+  if (notification.method === 'item/agentMessage/delta') {
+    const messageDelta = notification as Extract<AppServerNotification, { method: 'item/agentMessage/delta' }>;
+    session.finalResponse += messageDelta.params.delta;
+    return;
+  }
+
+  if (notification.method === 'item/completed') {
+    const completedItem = notification as { params: { item: Record<string, unknown> & { id: string; type: string } } };
+    const item = completedItem.params.item;
+    if (item.type === 'agentMessage') {
+      session.finalResponse = typeof item.text === 'string' && item.text ? item.text : session.finalResponse;
+    }
+    return;
+  }
+
+  if (notification.method === 'turn/completed') {
+    const completedTurn = notification as Extract<AppServerNotification, { method: 'turn/completed' }>;
+    setSessionTurnId(session, completedTurn.params.turn.id);
+    const turn = completedTurn.params.turn;
+    if (turn.status === 'completed') {
+      finishSession(session, {
+        status: 'completed',
+        finalResponse: session.finalResponse
+      });
+      return;
+    }
+
+    if (turn.status === 'interrupted') {
+      finishSession(session, {
+        status: 'interrupted',
+        reason: turn.error?.message || 'Run stopped by user.'
+      });
+      return;
+    }
+
+    finishSession(session, {
+      status: 'failed',
+      error: turn.error?.message || 'Codex app-server turn failed.'
+    });
+    return;
+  }
+}
+
+function handleFatalError(error: Error) {
+  for (const session of [...activeSessionsByRunId.values()]) {
+    if (session.settled) {
+      continue;
+    }
+
+    session.settled = true;
+    unregisterSession(session);
+    session.reject(error);
+  }
+}
+
+appServer.on('notification', (notification) => {
+  void handleNotification(notification);
+});
+
+appServer.on('fatal-error', (error) => {
+  handleFatalError(error instanceof Error ? error : new Error(String(error)));
+});
+
+async function startOrResumeThread(params: {
+  conversationId: string;
+  existingThreadId: string | null;
+  workingDirectory: string | undefined;
+}): Promise<{ threadId: string }> {
+  if (params.existingThreadId) {
+    try {
+      const resumed = await appServer.resumeThread({
+        threadId: params.existingThreadId,
+        cwd: params.workingDirectory ?? null,
+        model: config.defaultModel,
+        approvalPolicy: config.approvalPolicy,
+        sandbox: config.sandboxMode
+      });
+      return { threadId: resumed.thread.id };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/no rollout found/i.test(message)) {
+        throw error;
+      }
+
+      await updateConversationThread(params.conversationId, null);
+    }
+  }
+
+  const started = await appServer.startThread({
+    cwd: params.workingDirectory ?? null,
+    model: config.defaultModel,
+    approvalPolicy: config.approvalPolicy,
+    sandbox: config.sandboxMode
+  });
+  await updateConversationThread(params.conversationId, started.thread.id);
+  return { threadId: started.thread.id };
+}
+
+async function finalizeSuccessfulRun(params: {
+  session: ActiveTurnSession;
+  finalResponse: string;
+}) {
+  await addMessage({
+    conversationId: params.session.conversationId,
+    role: 'assistant',
+    content: params.finalResponse
+  });
+  await completeRun(params.session.runId, params.session.conversationId, params.finalResponse);
+  const updatedConversation = await getConversation(params.session.conversationId);
+  if (updatedConversation) {
+    params.session.emit({
+      type: 'conversation.updated',
+      conversation: updatedConversation
+    });
+  }
+
+  params.session.emit({
+    type: 'conversation.run.completed',
+    conversationId: params.session.conversationId,
+    runId: params.session.runId,
+    finalResponse: params.finalResponse
+  });
+}
+
+async function finalizeFailedRun(params: {
+  session: ActiveTurnSession;
+  reason: string;
+  wasCancelled: boolean;
+}) {
+  await failRun(params.session.runId, params.session.conversationId);
+  const updatedConversation = await getConversation(params.session.conversationId);
+  if (updatedConversation) {
+    params.session.emit({
+      type: 'conversation.updated',
+      conversation: updatedConversation
+    });
+  }
+
+  if (params.wasCancelled) {
+    params.session.emit({
+      type: 'conversation.run.cancelled',
+      conversationId: params.session.conversationId,
+      runId: params.session.runId,
+      reason: params.reason
+    });
+    return;
+  }
+
+  params.session.emit({
+    type: 'conversation.run.failed',
+    conversationId: params.session.conversationId,
+    runId: params.session.runId,
+    error: params.reason
+  });
 }
 
 export async function runConversationTurn(
@@ -229,152 +661,64 @@ export async function runConversationTurn(
     startedAt: run.startedAt
   });
 
-  const abortController = new AbortController();
-  activeRunControllers.set(run.id, abortController);
-
+  let session: ActiveTurnSession | null = null;
   try {
-    const codex = new Codex();
     const workingDirectory = ensureWorkspacePath(conversation.workspacePath);
     const workspaceContext = buildWorkspaceContextBlock(conversation);
-
-    const thread = conversation.codexThreadId
-      ? codex.resumeThread(conversation.codexThreadId, {
-          model: config.defaultModel,
-          modelReasoningEffort: config.reasoningEffort,
-          sandboxMode: config.sandboxMode,
-          approvalPolicy: config.approvalPolicy,
-          networkAccessEnabled: config.networkAccessEnabled,
-          workingDirectory,
-          skipGitRepoCheck: !conversation.workspacePath
-        })
-      : codex.startThread({
-          model: config.defaultModel,
-          modelReasoningEffort: config.reasoningEffort,
-          sandboxMode: config.sandboxMode,
-          approvalPolicy: config.approvalPolicy,
-          networkAccessEnabled: config.networkAccessEnabled,
-          workingDirectory,
-          skipGitRepoCheck: !conversation.workspacePath
-        });
-
-    const streamed = await thread.runStreamed(buildRunInput(conversationId, prompt, attachments, workspaceContext), {
-      signal: abortController.signal
-    });
-    let finalResponse = '';
-    let sequence = 0;
-
-    const persistStreamEvent = async (event: ThreadEvent) => {
-      sequence += 1;
-      await recordRunEvent({
-        runId: run.id,
-        conversationId,
-        sequence,
-        eventType: event.type,
-        payload: event
-      });
-
-      const drafts = deriveActivityDrafts(event);
-      for (const draft of drafts) {
-        const activity = await upsertActivity({
-          runId: run.id,
-          conversationId,
-          ...draft
-        });
-
-        emit({
-          type: 'conversation.run.activity',
-          conversationId,
-          runId: run.id,
-          activity
-        });
-      }
-    };
-
-    for await (const event of streamed.events) {
-      if (event.type === 'thread.started' && event.thread_id) {
-        await updateConversationThread(conversationId, event.thread_id);
-      }
-
-      if (event.type === 'item.completed' && event.item.type === 'agent_message') {
-        finalResponse = event.item.text || finalResponse;
-      }
-
-      await persistStreamEvent(event);
-
-      emit({
-        type: 'conversation.run.event',
-        conversationId,
-        runId: run.id,
-        event
-      });
-    }
-
-    await addMessage({
+    const { threadId } = await startOrResumeThread({
       conversationId,
-      role: 'assistant',
-      content: finalResponse
+      existingThreadId: conversation.codexThreadId,
+      workingDirectory
     });
-    await completeRun(run.id, conversationId, finalResponse);
-    const updatedConversation = await getConversation(conversationId);
-    if (updatedConversation) {
-      emit({
-        type: 'conversation.updated',
-        conversation: updatedConversation
-      });
-    }
 
-    emit({
-      type: 'conversation.run.completed',
+    session = createSession({
       conversationId,
       runId: run.id,
-      finalResponse
+      threadId,
+      emit
     });
+    registerSession(session);
+
+    const turnResponse = await appServer.startTurn({
+      threadId,
+      input: buildRunInput(conversationId, prompt, attachments, workspaceContext),
+      cwd: workingDirectory ?? null,
+      model: config.defaultModel,
+      approvalPolicy: config.approvalPolicy,
+      effort: config.reasoningEffort
+    });
+    setSessionTurnId(session, turnResponse.turn.id);
+
+    const outcome = await session.completion;
+    if (outcome.status === 'completed') {
+      await finalizeSuccessfulRun({
+        session,
+        finalResponse: outcome.finalResponse
+      });
+      return;
+    }
+
+    await finalizeFailedRun({
+      session,
+      reason: outcome.status === 'interrupted' ? outcome.reason : outcome.error,
+      wasCancelled: outcome.status === 'interrupted'
+    });
+    return;
   } catch (error) {
-    await failRun(run.id, conversationId);
-    const wasCancelled = abortController.signal.aborted;
-    const message = wasCancelled
-      ? 'Run stopped by user.'
-      : error instanceof Error
-        ? error.message
-        : 'Unknown Codex bridge error';
-    const activity = await upsertActivity({
-      runId: run.id,
-      conversationId,
-      sourceKey: wasCancelled ? `run-cancelled:${run.id}` : `bridge-error:${run.id}`,
-      kind: wasCancelled ? 'thinking' : 'error',
-      title: wasCancelled ? 'Run stopped' : 'Bridge error',
-      detail: message,
-      status: wasCancelled ? 'completed' : 'failed',
-      metadata: {
-        message
-      }
-    });
-    emit({
-      type: 'conversation.run.activity',
-      conversationId,
-      runId: run.id,
-      activity
-    });
-    const shouldResetThread =
-      wasCancelled || message.includes('no rollout found for thread id');
-    if (shouldResetThread) {
-      await updateConversationThread(conversationId, null);
+    if (session && !session.settled) {
+      unregisterSession(session);
     }
-    const updatedConversation = await getConversation(conversationId);
-    if (updatedConversation) {
-      emit({
-        type: 'conversation.updated',
-        conversation: updatedConversation
-      });
-    }
-    if (wasCancelled) {
-      emit({
-        type: 'conversation.run.cancelled',
-        conversationId,
-        runId: run.id,
-        reason: message
+
+    const message =
+      error instanceof Error ? error.message : 'Unknown Codex bridge error';
+    if (session) {
+      await finalizeFailedRun({
+        session,
+        reason: message,
+        wasCancelled: false
       });
     } else {
+      await failRun(run.id, conversationId);
       emit({
         type: 'conversation.run.failed',
         conversationId,
@@ -383,17 +727,63 @@ export async function runConversationTurn(
       });
     }
     throw error;
-  } finally {
-    activeRunControllers.delete(run.id);
   }
 }
 
-export function cancelRun(runId: string): boolean {
-  const controller = activeRunControllers.get(runId);
-  if (!controller) {
+export async function steerConversationTurn(
+  conversationId: string,
+  prompt: string,
+  attachments: ImageAttachment[]
+): Promise<{ runId: string }> {
+  const conversation = await getConversation(conversationId);
+  if (!conversation) {
+    throw new Error('Conversation not found.');
+  }
+
+  const session = activeSessionsByConversationId.get(conversationId);
+  if (!session || !session.turnId) {
+    throw new Error('Run is no longer active.');
+  }
+
+  const workingDirectory = ensureWorkspacePath(conversation.workspacePath);
+  const workspaceContext = buildWorkspaceContextBlock(conversation);
+  try {
+    const response = await appServer.steerTurn({
+      threadId: session.threadId,
+      turnId: session.turnId,
+      input: buildRunInput(conversationId, prompt, attachments, workspaceContext)
+    });
+    setSessionTurnId(session, response.turnId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/activeTurnNotSteerable/i.test(message)) {
+      throw new Error('This turn can no longer be steered. Wait for it to finish and send a new message.');
+    }
+
+    throw error;
+  }
+
+  await addMessage({
+    conversationId,
+    role: 'user',
+    content: deriveUserMessageContent(prompt),
+    attachments: toMessageAttachments(attachments)
+  });
+
+  return {
+    runId: session.runId
+  };
+}
+
+export async function cancelRun(runId: string): Promise<boolean> {
+  const session = activeSessionsByRunId.get(runId);
+  if (!session || !session.turnId) {
     return false;
   }
 
-  controller.abort();
+  await appServer.interruptTurn({
+    threadId: session.threadId,
+    turnId: session.turnId
+  });
   return true;
 }
