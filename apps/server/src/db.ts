@@ -753,6 +753,83 @@ export async function failRun(runId: string, conversationId: string): Promise<vo
   });
 }
 
+export async function reconcileOrphanedRuns(): Promise<{
+  failedRunIds: string[];
+  clearedConversationIds: string[];
+}> {
+  const supabase = getSupabaseAdmin();
+  const completedAt = now();
+
+  const { data: staleRuns, error: staleRunsError } = await supabase
+    .from('dev_agent_runs')
+    .select('id,conversation_id')
+    .eq('status', 'running')
+    .is('completed_at', null);
+
+  if (staleRunsError) {
+    throw new Error(`Failed to load orphaned runs: ${staleRunsError.message}`);
+  }
+
+  const failedRunIds = staleRuns?.map((run) => run.id) || [];
+  const candidateConversationIds = new Set((staleRuns || []).map((run) => run.conversation_id));
+
+  if (failedRunIds.length) {
+    const { error: updateRunsError } = await supabase
+      .from('dev_agent_runs')
+      .update({
+        status: 'failed',
+        completed_at: completedAt
+      })
+      .in('id', failedRunIds);
+
+    if (updateRunsError) {
+      throw new Error(`Failed to mark orphaned runs failed: ${updateRunsError.message}`);
+    }
+  }
+
+  const { data: activeConversations, error: activeConversationsError } = await supabase
+    .from('dev_agent_conversations')
+    .select('id')
+    .not('active_run_started_at', 'is', null);
+
+  if (activeConversationsError) {
+    throw new Error(`Failed to load active conversations for reconciliation: ${activeConversationsError.message}`);
+  }
+
+  for (const conversation of activeConversations || []) {
+    candidateConversationIds.add(conversation.id);
+  }
+
+  const clearedConversationIds: string[] = [];
+  for (const conversationId of candidateConversationIds) {
+    const { data: remainingRunningRows, error: remainingRunningError } = await supabase
+      .from('dev_agent_runs')
+      .select('id')
+      .eq('conversation_id', conversationId)
+      .eq('status', 'running')
+      .is('completed_at', null)
+      .limit(1);
+
+    if (remainingRunningError) {
+      throw new Error(`Failed to check remaining running runs: ${remainingRunningError.message}`);
+    }
+
+    if (remainingRunningRows?.length) {
+      continue;
+    }
+
+    await touchConversation(conversationId, {
+      active_run_started_at: null
+    });
+    clearedConversationIds.push(conversationId);
+  }
+
+  return {
+    failedRunIds,
+    clearedConversationIds
+  };
+}
+
 export async function markConversationViewed(conversationId: string): Promise<ConversationRecord> {
   const supabase = getSupabaseAdmin();
   const viewedAt = now();

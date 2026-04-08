@@ -18,7 +18,8 @@ import {
   listMessages,
   listRuns,
   listWorkspaces,
-  markConversationViewed
+  markConversationViewed,
+  reconcileOrphanedRuns
 } from './db.js';
 import { createConversationSchema, publishProofMediaSchema, validateWorkspaceSchema, websocketClientMessageSchema } from './schemas.js';
 import { cancelRun, runConversationTurn, steerConversationTurn } from './codexBridge.js';
@@ -612,6 +613,22 @@ wss.on('connection', (socket) => {
   });
 });
 
-server.listen(config.port, () => {
-  console.log(`dev-agent server listening on http://localhost:${config.port}`);
+async function startServer() {
+  const reconciliation = await reconcileOrphanedRuns();
+  if (reconciliation.failedRunIds.length || reconciliation.clearedConversationIds.length) {
+    console.log(
+      `reconciled ${reconciliation.failedRunIds.length} orphaned runs across ${reconciliation.clearedConversationIds.length} conversations`
+    );
+  }
+
+  server.listen(config.port, () => {
+    console.log(`dev-agent server listening on http://localhost:${config.port}`);
+  });
+}
+
+startServer().catch((error) => {
+  console.error(
+    error instanceof Error ? `Failed to start dev-agent server: ${error.message}` : 'Failed to start dev-agent server.'
+  );
+  process.exit(1);
 });
