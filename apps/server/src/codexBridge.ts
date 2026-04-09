@@ -59,6 +59,11 @@ const activeSessionsByConversationId = new Map<string, ActiveTurnSession>();
 const activeSessionsByThreadId = new Map<string, ActiveTurnSession>();
 const activeSessionsByTurnId = new Map<string, ActiveTurnSession>();
 
+function logBridgeWarning(message: string, error: unknown, context: Record<string, unknown> = {}) {
+  const detail = error instanceof Error ? error.message : String(error);
+  console.warn(`[codex bridge] ${message}: ${detail}`, context);
+}
+
 function ensureWorkspacePath(workspacePath: string | null): string | undefined {
   if (!workspacePath) {
     return undefined;
@@ -110,6 +115,7 @@ function buildWorkspaceContextBlock(conversation: {
   workspaceSimulatorUdid: string | null;
   workspaceMetroPort: number | null;
   workspaceEnvLabel: string | null;
+  workspaceSupabaseProjectRef: string | null;
   workspaceSyncStatus: string | null;
 }): string | null {
   if (!conversation.workspacePath) {
@@ -129,8 +135,16 @@ function buildWorkspaceContextBlock(conversation: {
       : null,
     conversation.workspaceMetroPort ? `- metro port: ${conversation.workspaceMetroPort}` : null,
     conversation.workspaceEnvLabel ? `- env label: ${conversation.workspaceEnvLabel}` : null,
+    conversation.workspaceSupabaseProjectRef
+      ? `- assigned Supabase project: ${conversation.workspaceSupabaseProjectRef}`
+      : null,
     conversation.workspaceSyncStatus ? `- sync status: ${conversation.workspaceSyncStatus}` : null,
-    'Use these assigned workspace resources by default for commands, simulator launches, and local app verification unless the user explicitly asks for something else.'
+    '- Android verification is supported too when the repo supports it.',
+    '- no dedicated Android emulator is assigned for this workspace by default; if Android work is requested, use the repo\'s standard Android run/verify commands and a shared or default emulator unless the user explicitly asks for something else.',
+    'Use these assigned workspace resources by default for commands, simulator launches, Android emulator launches, and local app verification unless the user explicitly asks for something else.',
+    conversation.workspaceSupabaseProjectRef
+      ? `You are allowed to make Supabase changes for this workspace, including editing schema or edge-function files in the repo and applying migrations or function deploys to project ${conversation.workspaceSupabaseProjectRef} when the task calls for it. Prefer this assigned Supabase project over production unless the user explicitly asks otherwise.`
+      : null
   ].filter(Boolean);
 
   return lines.join('\n');
@@ -430,13 +444,22 @@ async function handleNotification(notification: AppServerNotification): Promise<
   }
 
   session.sequence += 1;
-  await recordRunEvent({
-    runId: session.runId,
-    conversationId: session.conversationId,
-    sequence: session.sequence,
-    eventType: notification.method,
-    payload: notification
-  });
+  try {
+    await recordRunEvent({
+      runId: session.runId,
+      conversationId: session.conversationId,
+      sequence: session.sequence,
+      eventType: notification.method,
+      payload: notification
+    });
+  } catch (error) {
+    logBridgeWarning('Failed to persist run event', error, {
+      runId: session.runId,
+      conversationId: session.conversationId,
+      eventType: notification.method,
+      sequence: session.sequence
+    });
+  }
 
   session.emit({
     type: 'conversation.run.event',
@@ -445,7 +468,16 @@ async function handleNotification(notification: AppServerNotification): Promise<
     event: notification
   });
 
-  await emitActivityFromNotification(session, notification);
+  try {
+    await emitActivityFromNotification(session, notification);
+  } catch (error) {
+    logBridgeWarning('Failed to persist activity from notification', error, {
+      runId: session.runId,
+      conversationId: session.conversationId,
+      eventType: notification.method,
+      sequence: session.sequence
+    });
+  }
 
   if (notification.method === 'turn/started') {
     const turnStarted = notification as Extract<AppServerNotification, { method: 'turn/started' }>;
@@ -509,7 +541,11 @@ function handleFatalError(error: Error) {
 }
 
 appServer.on('notification', (notification) => {
-  void handleNotification(notification);
+  void handleNotification(notification).catch((error) => {
+    logBridgeWarning('Unhandled notification processing error', error, {
+      eventType: notification.method
+    });
+  });
 });
 
 appServer.on('fatal-error', (error) => {

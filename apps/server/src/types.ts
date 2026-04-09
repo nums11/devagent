@@ -57,6 +57,7 @@ export type ConversationRecord = {
   workspaceSimulatorUdid: string | null;
   workspaceMetroPort: number | null;
   workspaceEnvLabel: string | null;
+  workspaceSupabaseProjectRef: string | null;
   workspaceSyncStatus: WorkspaceSyncStatus | null;
   repoProfileSlug: string | null;
   repoProfileName: string | null;

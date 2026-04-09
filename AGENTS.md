@@ -5,8 +5,8 @@ This repo supports the shorthand `run full agent dev harness`.
 For `dev-agent`, that phrase means:
 - implement the requested feature
 - add or update stable `testID`s for every interaction the flow needs
-- add or update the relevant Maestro flow under `.maestro/ios/`
-- run the iOS verification loop until it passes
+- add or update the relevant Maestro flow under `.maestro/ios/` or `.maestro/android/`
+- run the relevant mobile verification loop until it passes
 - report the exact smoke command, Maestro debug path, and any retries or fixes that were needed
 - if the user explicitly asks to archive or ship to TestFlight, use the Xcode CLI release script in this repo
 
@@ -15,14 +15,14 @@ For `dev-agent`, that phrase means:
 1. Inspect the feature area in `apps/mobile` and any required bridge logic in `apps/server`.
 2. Implement the feature.
 3. Add or update deterministic `testID`s in the mobile UI.
-4. Add or update the relevant Maestro flow in `.maestro/ios/`.
+4. Add or update the relevant Maestro flow in `.maestro/ios/` or `.maestro/android/`, whichever matches the requested platform.
 5. Run typecheck:
    - `npm run typecheck`
 6. Run the most relevant smoke flow until it passes:
    - `npm run smoke:ios:chat`
    - `npm run smoke:ios:theme`
    - `npm run smoke:ios:steer`
-   - or run `maestro test .maestro/ios/<flow>.yaml` for a new feature-specific flow
+   - or run `maestro test .maestro/ios/<flow>.yaml` or `maestro test .maestro/android/<flow>.yaml` for a new feature-specific flow
 7. If a harness run produces a proof video and the work was requested from inside a `dev-agent` chat, publish that video back into the conversation:
    - `npm run publish:proof-video -- <conversationId> <localPath> [message]`
    - if the user asks for a screenshot instead of a full harness proof video, use `npm run publish:proof-image -- <conversationId> <localPath> [message]`
@@ -36,6 +36,7 @@ For `dev-agent`, that phrase means:
 
 - Start the bridge with `npm run dev:server`
 - Launch the mobile app from the repo root with `npm run ios -- --port 8081`
+- Android testing is supported too; use the repo's standard Android commands when the task calls for Android verification
 - Do not use `npx expo run:ios` from the repo root directly
 - The mobile app workspace is `apps/mobile`
 - The server workspace is `apps/server`
@@ -73,4 +74,6 @@ For `dev-agent`, that phrase means:
 - Prefer deterministic selectors over text matching when possible.
 - For chat assertions, prefer stable message-order `testID`s over raw visible text.
 - If iOS modal taps are flaky, improve the UI event wiring instead of only loosening the smoke timeout.
+- When Android work is requested, treat Android verification as a first-class supported path, not a fallback.
+- If no dedicated Android emulator is assigned in the workspace context, it is fine to use a shared or default emulator together with the repo's documented Android run and verification commands.
 - Keep the mobile shell visually close to Codex desktop, but optimize interactions for touch first.

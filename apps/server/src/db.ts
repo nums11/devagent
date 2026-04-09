@@ -314,6 +314,7 @@ function mapConversation(row: {
     workspaceSimulatorUdid: workspace?.simulatorUdid || null,
     workspaceMetroPort: workspace?.metroPort || null,
     workspaceEnvLabel: workspace?.envLabel || null,
+    workspaceSupabaseProjectRef: workspace?.supabaseProjectRef || null,
     workspaceSyncStatus: workspace?.syncStatus || null,
     repoProfileSlug: workspace?.repoProfile?.slug || null,
     repoProfileName: workspace?.repoProfile?.name || null,
