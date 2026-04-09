@@ -134,9 +134,15 @@ function buildWorkspaceContextBlock(conversation: {
       ? `- simulator: ${conversation.workspaceSimulatorName}${conversation.workspaceSimulatorUdid ? ` (${conversation.workspaceSimulatorUdid})` : ''}`
       : null,
     conversation.workspaceMetroPort ? `- metro port: ${conversation.workspaceMetroPort}` : null,
+    conversation.workspaceSimulatorName && conversation.workspaceMetroPort
+      ? `- example iOS launch command: npm run ios -- --port ${conversation.workspaceMetroPort} --device "${conversation.workspaceSimulatorName}"`
+      : null,
     conversation.workspaceEnvLabel ? `- env label: ${conversation.workspaceEnvLabel}` : null,
     conversation.workspaceSupabaseProjectRef
       ? `- assigned Supabase project: ${conversation.workspaceSupabaseProjectRef}`
+      : null,
+    conversation.workspaceSupabaseProjectRef
+      ? '- backend targeting may also be defined in repo env files like .env or .env.local and loaded through the repo env config; inspect those files and config before changing Supabase targets.'
       : null,
     conversation.workspaceSyncStatus ? `- sync status: ${conversation.workspaceSyncStatus}` : null,
     '- Android verification is supported too when the repo supports it.',
